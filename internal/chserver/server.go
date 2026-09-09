@@ -213,6 +213,15 @@ func (s *Server) handshake(conn net.Conn, r *proto.Reader, buf *proto.Buffer) (i
 	if err := s.flush(conn, buf); err != nil {
 		return 0, err
 	}
+
+	// ch-go sends an addendum right after ServerHello: a quota-key string when
+	// the negotiated protocol version supports it (FeatureQuotaKey). Consume it,
+	// else its bytes are misread as the next packet code.
+	if proto.FeatureQuotaKey.In(ver) {
+		if _, err := r.Str(); err != nil {
+			return 0, err
+		}
+	}
 	log.Printf("handshake %s: client=%q proto=%d", conn.RemoteAddr(), hello.Name, ver)
 	return ver, nil
 }
