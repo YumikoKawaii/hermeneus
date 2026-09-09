@@ -2,7 +2,6 @@ package chserver
 
 import (
 	"fmt"
-	"net"
 	"regexp"
 
 	"github.com/ClickHouse/ch-go/proto"
@@ -28,8 +27,12 @@ var insertTableRe = regexp.MustCompile(`(?is)^\s*INSERT\s+INTO\s+` + "`?" + `([A
 //     passed through verbatim
 //   - LZ4-compressed block path
 //   - dedicated Stream Load label for idempotent retry
-func (s *Server) handleInsert(conn net.Conn, r *proto.Reader, buf *proto.Buffer, ver int, body string) error {
+func (s *Server) handleInsert(cc *connCtx, body string) error {
 	return nil
+	// When implemented, decode each block compression-aware:
+	//   if cc.compressed { cc.r.EnableCompression(); defer cc.r.DisableCompression() }
+	// around block.DecodeBlock, mirroring drainClientData.
+	//
 	//m := insertTableRe.FindStringSubmatch(body)
 	//if m == nil {
 	//	return nil
@@ -37,7 +40,7 @@ func (s *Server) handleInsert(conn net.Conn, r *proto.Reader, buf *proto.Buffer,
 	//batch := starrocks.Batch{Table: m[1]}
 	//
 	//for {
-	//	n, err := r.UVarInt()
+	//	n, err := cc.r.UVarInt()
 	//	if err != nil {
 	//		return nil
 	//	}
@@ -45,12 +48,12 @@ func (s *Server) handleInsert(conn net.Conn, r *proto.Reader, buf *proto.Buffer,
 	//		return nil
 	//	}
 	//	var data proto.ClientData
-	//	if err := data.DecodeAware(r, ver); err != nil {
+	//	if err := data.DecodeAware(cc.r, cc.ver); err != nil {
 	//		return nil
 	//	}
 	//	var results proto.Results
 	//	var block proto.Block
-	//	if err := block.DecodeBlock(r, ver, results.Auto()); err != nil {
+	//	if err := block.DecodeBlock(cc.r, cc.ver, results.Auto()); err != nil {
 	//		return nil
 	//	}
 	//	if block.Rows == 0 {
@@ -64,7 +67,7 @@ func (s *Server) handleInsert(conn net.Conn, r *proto.Reader, buf *proto.Buffer,
 	//if err := s.sr.StreamLoad(context.Background(), batch); err != nil {
 	//	return nil
 	//}
-	//return s.sendResult(conn, buf, ver, nil)
+	//return s.sendResult(cc, nil)
 }
 
 // appendBlock reads decoded columns from a ClientData block into the Batch,

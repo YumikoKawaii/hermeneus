@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 
+	"github.com/ClickHouse/ch-go/compress"
 	"github.com/ClickHouse/ch-go/proto"
 	"github.com/yumikokawaii/hermeneus/internal/config"
 	"github.com/yumikokawaii/hermeneus/internal/starrocks"
@@ -55,25 +56,43 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	}
 }
 
+// connCtx holds the per-connection protocol state: the wire reader/writer, the
+// negotiated protocol version, and whether the client negotiated LZ4 block
+// compression (learned from each Query packet's compression field). The
+// compressor is per-connection because it carries internal scratch buffers.
+type connCtx struct {
+	conn       net.Conn
+	r          *proto.Reader
+	buf        *proto.Buffer
+	ver        int
+	compressed bool
+	compressor *compress.Writer
+}
+
 func (s *Server) handle(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 
-	reader := proto.NewReader(conn)
-	buf := new(proto.Buffer)
+	cc := &connCtx{
+		conn:       conn,
+		r:          proto.NewReader(conn),
+		buf:        new(proto.Buffer),
+		compressor: compress.NewWriter(),
+	}
 
-	ver, err := s.handshake(conn, reader, buf)
+	ver, err := s.handshake(conn, cc.r, cc.buf)
 	if err != nil {
 		if !errors.Is(err, io.EOF) {
 			log.Printf("handshake %s: %v", conn.RemoteAddr(), err)
 		}
 		return
 	}
+	cc.ver = ver
 
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		code, err := s.readCode(reader)
+		code, err := s.readCode(cc.r)
 		if err != nil {
 			if !errors.Is(err, io.EOF) {
 				log.Printf("packet %s: %v", conn.RemoteAddr(), err)
@@ -82,18 +101,18 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 		}
 		switch code {
 		case proto.ClientCodePing:
-			buf.Reset()
-			proto.ServerCodePong.Encode(buf)
-			if err := s.flush(conn, buf); err != nil {
+			cc.buf.Reset()
+			proto.ServerCodePong.Encode(cc.buf)
+			if err := s.flush(conn, cc.buf); err != nil {
 				return
 			}
 		case proto.ClientCodeQuery:
-			if err := s.handleQuery(conn, reader, buf, ver); err != nil {
+			if err := s.handleQuery(cc); err != nil {
 				log.Printf("query %s: %v", conn.RemoteAddr(), err)
 				return
 			}
 		default:
-			if err := s.sendException(conn, buf, ver, code.String()+" not implemented"); err != nil {
+			if err := s.sendException(conn, cc.buf, ver, code.String()+" not implemented"); err != nil {
 				return
 			}
 		}
@@ -104,53 +123,59 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 // routes it: system.* probe -> canned block; DDL -> swallow; known SELECT ->
 // translate + StarRocks query -> result block; INSERT -> decode blocks +
 // Stream Load; anything else -> exception (the tripwire).
-func (s *Server) handleQuery(conn net.Conn, r *proto.Reader, buf *proto.Buffer, ver int) error {
+func (s *Server) handleQuery(cc *connCtx) error {
 	var q proto.Query
-	if err := q.DecodeAware(r, ver); err != nil {
+	if err := q.DecodeAware(cc.r, cc.ver); err != nil {
 		return err
 	}
+	// The Query packet's compression field decides BOTH directions for this
+	// query: the client sends its data blocks compressed and expects result
+	// blocks compressed. (ClickHouse TCPHandler keys state.compression off this.)
+	cc.compressed = q.Compression == proto.CompressionEnabled
 
 	body := q.Body
 	if translate.Classify(body) == translate.KindInsert {
-		return s.handleInsert(conn, r, buf, ver, body)
+		return s.handleInsert(cc, body)
 	}
 
-	// Coroot's ch-go sends a trailing empty data block after the query body.
-	if err := s.drainClientData(r, ver); err != nil {
+	// ch-go sends a trailing (empty) data block after the query body.
+	if err := s.drainClientData(cc); err != nil {
 		return err
 	}
 
 	if cols, ok := system.Match(body, s.cfg.Server.Database); ok {
-		return s.sendResult(conn, buf, ver, cols)
+		return s.sendResult(cc, cols)
 	}
 	if system.IsDDL(body) {
-		return s.sendResult(conn, buf, ver, nil)
+		return s.sendResult(cc, nil)
 	}
 
 	tr, err := translate.Translate(body)
 	if err != nil {
 		log.Printf("unrecognised query: %s", body)
-		return s.sendException(conn, buf, ver, "hermeneus: unrecognised query")
+		return s.sendException(cc.conn, cc.buf, cc.ver, "hermeneus: unrecognised query")
 	}
 
 	rows, err := s.sr.Query(context.Background(), tr.SQL)
 	if err != nil {
 		log.Printf("starrocks query failed: %v (sql=%s)", err, tr.SQL)
-		return s.sendException(conn, buf, ver, "hermeneus: starrocks query failed")
+		return s.sendException(cc.conn, cc.buf, cc.ver, "hermeneus: starrocks query failed")
 	}
 	defer rows.Close()
 
 	cols, err := encodeRows(rows, tr.Shape)
 	if err != nil {
 		log.Printf("encode rows: %v", err)
-		return s.sendException(conn, buf, ver, "hermeneus: result encode failed")
+		return s.sendException(cc.conn, cc.buf, cc.ver, "hermeneus: result encode failed")
 	}
-	return s.sendResult(conn, buf, ver, cols)
+	return s.sendResult(cc, cols)
 }
 
-// drainClientData reads the empty ClientData block that follows a query body.
-func (s *Server) drainClientData(r *proto.Reader, ver int) error {
-	n, err := r.UVarInt()
+// drainClientData reads the (empty) ClientData block that follows a query body.
+// The block payload is LZ4-compressed when the client negotiated compression;
+// the code and table name that precede it are always raw.
+func (s *Server) drainClientData(cc *connCtx) error {
+	n, err := cc.r.UVarInt()
 	if err != nil {
 		return err
 	}
@@ -158,31 +183,48 @@ func (s *Server) drainClientData(r *proto.Reader, ver int) error {
 		return errors.New("expected data block after query")
 	}
 	var data proto.ClientData
-	if err := data.DecodeAware(r, ver); err != nil {
+	if err := data.DecodeAware(cc.r, cc.ver); err != nil {
 		return err
 	}
+	if cc.compressed {
+		cc.r.EnableCompression()
+		defer cc.r.DisableCompression()
+	}
 	var block proto.Block
-	return block.DecodeBlock(r, ver, nil)
+	return block.DecodeBlock(cc.r, cc.ver, nil)
 }
 
 // sendResult writes one data block (cols, single row when present; header-only
-// when cols is nil) followed by EndOfStream.
-func (s *Server) sendResult(conn net.Conn, buf *proto.Buffer, ver int, cols []proto.InputColumn) error {
+// when cols is nil) followed by EndOfStream. When the client negotiated
+// compression, the block payload is LZ4-compressed in place; the packet code,
+// table name, and trailing EndOfStream stay raw (only blocks are compressed).
+func (s *Server) sendResult(cc *connCtx, cols []proto.InputColumn) error {
 	rows := 0
 	if len(cols) > 0 {
 		rows = cols[0].Data.Rows()
 	}
+	buf := cc.buf
 	buf.Reset()
 	proto.ServerCodeData.Encode(buf)
-	if proto.FeatureTempTables.In(ver) {
+	if proto.FeatureTempTables.In(cc.ver) {
 		buf.PutString("")
 	}
+
+	// Everything from here is the compressible block payload.
+	start := len(buf.Buf)
 	block := proto.Block{Columns: len(cols), Rows: rows}
-	if err := block.EncodeBlock(buf, ver, cols); err != nil {
+	if err := block.EncodeBlock(buf, cc.ver, cols); err != nil {
 		return err
 	}
+	if cc.compressed {
+		if err := cc.compressor.Compress(compress.LZ4, buf.Buf[start:]); err != nil {
+			return err
+		}
+		buf.Buf = append(buf.Buf[:start], cc.compressor.Data...)
+	}
+
 	proto.ServerCodeEndOfStream.Encode(buf)
-	return s.flush(conn, buf)
+	return s.flush(cc.conn, buf)
 }
 
 func (s *Server) handshake(conn net.Conn, r *proto.Reader, buf *proto.Buffer) (int, error) {
