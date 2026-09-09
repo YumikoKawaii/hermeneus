@@ -103,6 +103,108 @@ var registry = []registered{
 			{Name: "count", CHType: "UInt64"},
 		}},
 	},
+	{
+		// GetServicesFromTraces (traces.go Q1):
+		//   SELECT DISTINCT ServiceName FROM otel_traces_service_name WHERE LastSeen >= @from
+		match: func(n string) bool {
+			return strings.HasPrefix(n, "SELECT DISTINCT ServiceName FROM otel_traces_service_name")
+		},
+		shape: ResultShape{Columns: []Column{{Name: "ServiceName", CHType: "String"}}},
+	},
+	{
+		// GetProfileTypes (profiles.go Q10):
+		//   SELECT DISTINCT ServiceName, Type FROM profiling_profiles WHERE LastSeen >= @from
+		match: func(n string) bool {
+			return strings.HasPrefix(n, "SELECT DISTINCT ServiceName, Type FROM profiling_profiles")
+		},
+		shape: ResultShape{Columns: []Column{
+			{Name: "ServiceName", CHType: "String"},
+			{Name: "Type", CHType: "String"},
+		}},
+	},
+	{
+		// trace-id ts window (traces.go Q2):
+		//   SELECT min(Start), max(End)+1 FROM otel_traces_trace_id_ts WHERE TraceId ...
+		match: func(n string) bool {
+			return strings.HasPrefix(n, "SELECT min(Start), max(End)+1 FROM otel_traces_trace_id_ts")
+		},
+		shape: ResultShape{Columns: []Column{
+			{Name: "min", CHType: "DateTime"},
+			{Name: "max", CHType: "DateTime"},
+		}},
+	},
+	{
+		// getTraces (traces.go Q9):
+		//   SELECT count(1), groupArray(distinct TraceId) FROM (SELECT TraceId FROM otel_traces WHERE ...)
+		match: func(n string) bool {
+			return strings.HasPrefix(n, "SELECT count(1), groupArray(distinct TraceId) FROM (SELECT TraceId FROM otel_traces")
+		},
+		shape: ResultShape{Columns: []Column{
+			{Name: "count", CHType: "UInt64"},
+			{Name: "traceIds", CHType: "Array(String)"},
+		}},
+	},
+	{
+		// querySpans / getTraceSpans (traces.go Q7, Q8): identical 14-col shape.
+		// Events.* are CH Nested parallel-array columns; SR schema exposes them as
+		// Array columns (mapping owned out-of-band, SQL passes through textually).
+		match: func(n string) bool {
+			return strings.HasPrefix(n, "SELECT Timestamp, TraceId, SpanId, ParentSpanId, SpanName, ServiceName, Duration, StatusCode, StatusMessage, ResourceAttributes, SpanAttributes, Events.Timestamp, Events.Name, Events.Attributes FROM otel_traces")
+		},
+		shape: ResultShape{Columns: []Column{
+			{Name: "Timestamp", CHType: "DateTime64(9)"},
+			{Name: "TraceId", CHType: "String"},
+			{Name: "SpanId", CHType: "String"},
+			{Name: "ParentSpanId", CHType: "String"},
+			{Name: "SpanName", CHType: "String"},
+			{Name: "ServiceName", CHType: "String"},
+			{Name: "Duration", CHType: "Int64"},
+			{Name: "StatusCode", CHType: "String"},
+			{Name: "StatusMessage", CHType: "String"},
+			{Name: "ResourceAttributes", CHType: "Map(String,String)"},
+			{Name: "SpanAttributes", CHType: "Map(String,String)"},
+			{Name: "Events.Timestamp", CHType: "Array(DateTime64(9))"},
+			{Name: "Events.Name", CHType: "Array(String)"},
+			{Name: "Events.Attributes", CHType: "Array(Map(String,String))"},
+		}},
+	},
+	{
+		// getProfile (profiles.go Q11, qProfile):
+		//   WITH samples AS (...), stacks AS (...) SELECT value, stack FROM stacks JOIN samples USING(hash)
+		match: func(n string) bool {
+			return strings.HasPrefix(n, "WITH samples AS (") &&
+				strings.HasSuffix(n, "SELECT value, stack FROM stacks JOIN samples USING(hash)")
+		},
+		shape: ResultShape{Columns: []Column{
+			{Name: "value", CHType: "Int64"},
+			{Name: "stack", CHType: "Array(String)"},
+		}},
+	},
+	{
+		// getProfile avg (profiles.go Q12, qProfileAvg):
+		//   ... SELECT toInt64(value/profiles), stack FROM stacks JOIN samples USING(hash), profiles
+		match: func(n string) bool {
+			return strings.HasPrefix(n, "WITH samples AS (") &&
+				strings.HasSuffix(n, "SELECT toInt64(value/profiles), stack FROM stacks JOIN samples USING(hash), profiles")
+		},
+		shape: ResultShape{Columns: []Column{
+			{Name: "value", CHType: "Int64"},
+			{Name: "stack", CHType: "Array(String)"},
+		}},
+	},
+	{
+		// getDiffProfile (profiles.go Q13, qProfileDiff):
+		//   ... SELECT base, comp, stack FROM stacks JOIN samples USING(hash)
+		match: func(n string) bool {
+			return strings.HasPrefix(n, "WITH samples AS (") &&
+				strings.HasSuffix(n, "SELECT base, comp, stack FROM stacks JOIN samples USING(hash)")
+		},
+		shape: ResultShape{Columns: []Column{
+			{Name: "base", CHType: "Int64"},
+			{Name: "comp", CHType: "Int64"},
+			{Name: "stack", CHType: "Array(String)"},
+		}},
+	},
 }
 
 // CH → StarRocks construct rewrites (see docs/DESIGN.md §4). Applied in order to
@@ -118,8 +220,62 @@ func rewriteConstructs(sql string) string {
 	sql = toStartOfIntervalRe.ReplaceAllString(sql, "from_unixtime(floor(unix_timestamp($1)/$2)*$2)")
 	sql = rewriteCall(sql, "multiIf", multiIfToCase)
 	sql = rewriteCall(sql, "intDiv", intDivToFloor)
+	sql = rewriteCall(sql, "countIf", countIfToCount)
+	sql = rewriteCall(sql, "groupArray", groupArrayToArrayAgg)
+	sql = rewriteCall(sql, "any", anyToAnyValue)
+	sql = rewriteCall(sql, "has", hasToArrayContains)
+	sql = rewriteCall(sql, "empty", emptyToArrayLength)
+	sql = rewriteCall(sql, "toInt64", toInt64ToCast)
 	sql = globalInRe.ReplaceAllString(sql, "IN")
 	return sql
+}
+
+// toInt64(x) -> cast(x as bigint)
+func toInt64ToCast(args []string) (string, bool) {
+	if len(args) != 1 {
+		return "", false
+	}
+	return fmt.Sprintf("cast(%s as bigint)", args[0]), true
+}
+
+// countIf(cond) -> count(if(cond,1,null))
+func countIfToCount(args []string) (string, bool) {
+	if len(args) != 1 {
+		return "", false
+	}
+	return fmt.Sprintf("count(if(%s,1,null))", args[0]), true
+}
+
+// groupArray(distinct x) -> array_agg(distinct x); groupArray(x) -> array_agg(x)
+func groupArrayToArrayAgg(args []string) (string, bool) {
+	if len(args) != 1 {
+		return "", false
+	}
+	return fmt.Sprintf("array_agg(%s)", args[0]), true
+}
+
+// any(x) -> any_value(x)
+func anyToAnyValue(args []string) (string, bool) {
+	if len(args) != 1 {
+		return "", false
+	}
+	return fmt.Sprintf("any_value(%s)", args[0]), true
+}
+
+// has(arr, x) -> array_contains(arr, x)
+func hasToArrayContains(args []string) (string, bool) {
+	if len(args) != 2 {
+		return "", false
+	}
+	return fmt.Sprintf("array_contains(%s, %s)", args[0], args[1]), true
+}
+
+// empty(arr) -> array_length(arr) = 0
+func emptyToArrayLength(args []string) (string, bool) {
+	if len(args) != 1 {
+		return "", false
+	}
+	return fmt.Sprintf("array_length(%s) = 0", args[0]), true
 }
 
 // rewriteCall replaces every fn(...) call in sql (paren-aware, possibly nested)

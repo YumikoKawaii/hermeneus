@@ -2,6 +2,7 @@ package chserver
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"time"
@@ -56,9 +57,106 @@ func newAppender(name, chType string) (appender, error) {
 			c.Append(t)
 			return nil
 		}}, nil
+	case "DateTime64(9)":
+		c := &proto.ColDateTime64{}
+		c = c.WithPrecision(proto.PrecisionNano)
+		return appender{proto.InputColumn{Name: name, Data: c}, func(raw []byte) error {
+			t, err := parseTime(string(raw))
+			if err != nil {
+				return err
+			}
+			c.Append(t)
+			return nil
+		}}, nil
+	case "Array(String)":
+		c := new(proto.ColStr).Array()
+		return appender{proto.InputColumn{Name: name, Data: c}, func(raw []byte) error {
+			vals, err := parseStrArray(raw)
+			if err != nil {
+				return err
+			}
+			c.Append(vals)
+			return nil
+		}}, nil
+	case "Map(String,String)":
+		c := proto.NewMap(new(proto.ColStr), new(proto.ColStr))
+		return appender{proto.InputColumn{Name: name, Data: c}, func(raw []byte) error {
+			m, err := parseStrMap(raw)
+			if err != nil {
+				return err
+			}
+			c.Append(m)
+			return nil
+		}}, nil
+	case "Array(DateTime64(9))":
+		inner := new(proto.ColDateTime64).WithPrecision(proto.PrecisionNano)
+		c := proto.NewArray[time.Time](inner)
+		return appender{proto.InputColumn{Name: name, Data: c}, func(raw []byte) error {
+			ss, err := parseStrArray(raw)
+			if err != nil {
+				return err
+			}
+			ts := make([]time.Time, len(ss))
+			for i, s := range ss {
+				t, err := parseTime(s)
+				if err != nil {
+					return err
+				}
+				ts[i] = t
+			}
+			c.Append(ts)
+			return nil
+		}}, nil
+	case "Array(Map(String,String))":
+		inner := proto.NewMap(new(proto.ColStr), new(proto.ColStr))
+		c := proto.NewArray[map[string]string](inner)
+		return appender{proto.InputColumn{Name: name, Data: c}, func(raw []byte) error {
+			ms, err := parseMapArray(raw)
+			if err != nil {
+				return err
+			}
+			c.Append(ms)
+			return nil
+		}}, nil
 	default:
 		return appender{}, fmt.Errorf("unsupported CH type %q", chType)
 	}
+}
+
+// StarRocks returns ARRAY / MAP columns over the MySQL wire as JSON text
+// (["a","b"], {"k":"v"}). parseStrArray / parseStrMap decode that text; an empty
+// cell is treated as an empty container.
+func parseStrArray(raw []byte) ([]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var vals []string
+	if err := json.Unmarshal(raw, &vals); err != nil {
+		return nil, fmt.Errorf("array cell %q: %w", raw, err)
+	}
+	return vals, nil
+}
+
+func parseStrMap(raw []byte) (map[string]string, error) {
+	if len(raw) == 0 {
+		return map[string]string{}, nil
+	}
+	m := map[string]string{}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, fmt.Errorf("map cell %q: %w", raw, err)
+	}
+	return m, nil
+}
+
+func parseMapArray(raw []byte) ([]map[string]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var ms []map[string]string
+	if err := json.Unmarshal(raw, &ms); err != nil {
+		return nil, fmt.Errorf("array-of-map cell %q: %w", raw, err)
+	}
+	return ms, nil
 }
 
 // encodeRows maps StarRocks rows into ch columns per the declared shape.

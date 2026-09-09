@@ -44,6 +44,26 @@ func TestTranslate(t *testing.T) {
 			want: "SELECT CASE WHEN SeverityNumber=0 THEN 0 ELSE floor((SeverityNumber)/(4))+1 END, from_unixtime(floor(unix_timestamp(Timestamp)/60)*60), count(1) FROM otel_logs WHERE ServiceName = 'x' GROUP BY 1, 2",
 		},
 		{
+			name: "GetServicesFromTraces",
+			sql:  "SELECT DISTINCT ServiceName FROM otel_traces_service_name WHERE LastSeen >= '2026-09-10 00:00:00'",
+			want: "SELECT DISTINCT ServiceName FROM otel_traces_service_name WHERE LastSeen >= '2026-09-10 00:00:00'",
+		},
+		{
+			name: "GetProfileTypes",
+			sql:  "SELECT DISTINCT ServiceName, Type FROM profiling_profiles WHERE LastSeen >= '2026-09-10 00:00:00'",
+			want: "SELECT DISTINCT ServiceName, Type FROM profiling_profiles WHERE LastSeen >= '2026-09-10 00:00:00'",
+		},
+		{
+			name: "getTraces count + groupArray distinct",
+			sql:  "SELECT count(1), groupArray(distinct TraceId) FROM (SELECT TraceId FROM otel_traces WHERE ServiceName = 'x' ORDER BY Timestamp DESC LIMIT 10)",
+			want: "SELECT count(1), array_agg(distinct TraceId) FROM (SELECT TraceId FROM otel_traces WHERE ServiceName = 'x' ORDER BY Timestamp DESC LIMIT 10)",
+		},
+		{
+			name: "qProfile value + stack",
+			sql:  "WITH samples AS (SELECT StackHash AS hash, sum(Value) AS value FROM profiling_samples GROUP BY StackHash), stacks AS (SELECT Hash AS hash, any(Stack) AS stack FROM profiling_stacks WHERE Hash GLOBAL IN (SELECT hash FROM samples) GROUP BY Hash) SELECT value, stack FROM stacks JOIN samples USING(hash)",
+			want: "WITH samples AS (SELECT StackHash AS hash, sum(Value) AS value FROM profiling_samples GROUP BY StackHash), stacks AS (SELECT Hash AS hash, any_value(Stack) AS stack FROM profiling_stacks WHERE Hash IN (SELECT hash FROM samples) GROUP BY Hash) SELECT value, stack FROM stacks JOIN samples USING(hash)",
+		},
+		{
 			name:    "unknown query trips the wire",
 			sql:     "SELECT ServiceName, Timestamp FROM otel_logs LIMIT 5",
 			wantErr: true,
@@ -83,5 +103,28 @@ func TestMultiIfToCase(t *testing.T) {
 		if ok != tt.ok || got != tt.want {
 			t.Errorf("multiIfToCase(%v) = (%q,%v), want (%q,%v)", tt.args, got, ok, tt.want, tt.ok)
 		}
+	}
+}
+
+func TestRewriteConstructs(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"countIf", "countIf(StatusCode = 'X')", "count(if(StatusCode = 'X',1,null))"},
+		{"groupArray distinct", "groupArray(distinct TraceId)", "array_agg(distinct TraceId)"},
+		{"any", "any(Stack)", "any_value(Stack)"},
+		{"has", "has(@containers, Labels['id'])", "array_contains(@containers, Labels['id'])"},
+		{"empty", "empty(@containers)", "array_length(@containers) = 0"},
+		{"toInt64", "toInt64(value/profiles)", "cast(value/profiles as bigint)"},
+		{"global in", "Hash GLOBAL IN (SELECT hash FROM samples)", "Hash IN (SELECT hash FROM samples)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := rewriteConstructs(tt.in); got != tt.want {
+				t.Errorf("rewriteConstructs(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
 	}
 }
