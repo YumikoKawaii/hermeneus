@@ -1,9 +1,9 @@
 package config
 
 type Config struct {
-	ListenAddr string     `yaml:"listenAddr"`
-	Server     CHServer   `yaml:"server"`
-	StarRocks  StarRocks  `yaml:"starrocks"`
+	ListenAddr string    `yaml:"listenAddr"`
+	Server     CHServer  `yaml:"server"`
+	StarRocks  StarRocks `yaml:"starrocks"`
 }
 
 type CHServer struct {

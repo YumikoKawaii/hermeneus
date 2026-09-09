@@ -2,6 +2,7 @@ package translate
 
 import (
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 )
@@ -15,11 +16,11 @@ var ErrUnknownQuery = errors.New("hermeneus: unrecognised query, no translation 
 type Kind int
 
 const (
-	KindUnknown Kind = iota
-	KindSystemProbe // system.* / handshake probe -> internal/system
-	KindDDL         // CREATE/ALTER/MV -> swallow or map
-	KindInsert      // INSERT -> Stream Load
-	KindSelect      // known Coroot SELECT -> Translate
+	KindUnknown     Kind = iota
+	KindSystemProbe      // system.* / handshake probe -> internal/system
+	KindDDL              // CREATE/ALTER/MV -> swallow or map
+	KindInsert           // INSERT -> Stream Load
+	KindSelect           // known Coroot SELECT -> Translate
 )
 
 // ResultShape declares the exact column order + ClickHouse types Coroot's
@@ -115,51 +116,58 @@ var (
 
 func rewriteConstructs(sql string) string {
 	sql = toStartOfIntervalRe.ReplaceAllString(sql, "from_unixtime(floor(unix_timestamp($1)/$2)*$2)")
-	sql = rewriteMultiIfAll(sql)
-	sql = rewriteIntDivAll(sql)
+	sql = rewriteCall(sql, "multiIf", multiIfToCase)
+	sql = rewriteCall(sql, "intDiv", intDivToFloor)
 	sql = globalInRe.ReplaceAllString(sql, "IN")
 	return sql
 }
 
-// rewriteIntDivAll replaces intDiv(a, b) with floor((a)/(b)); paren-aware.
-func rewriteIntDivAll(sql string) string {
-	const kw = "intDiv("
-	for {
-		i := strings.Index(sql, kw)
+// rewriteCall replaces every fn(...) call in sql (paren-aware, possibly nested)
+// by feeding its comma-split, top-level arguments to conv. If conv returns ok
+// false the call is left untouched for the tripwire to reject downstream.
+func rewriteCall(sql, fn string, conv func(args []string) (string, bool)) string {
+	kw := fn + "("
+	for from := 0; ; {
+		i := strings.Index(sql[from:], kw)
 		if i < 0 {
 			return sql
 		}
+		i += from
 		open := i + len(kw) - 1
-		close := matchParen(sql, open)
-		if close < 0 {
-			return sql
+		end := matchParen(sql, open)
+		if end < 0 {
+			return sql // unbalanced; leave for the tripwire
 		}
-		parts := splitTopLevel(sql[open+1 : close])
-		if len(parts) != 2 {
-			return sql // unexpected; leave for the tripwire
+		repl, ok := conv(splitArgs(sql[open+1 : end]))
+		if !ok {
+			from = open + 1 // skip past this call, keep scanning
+			continue
 		}
-		repl := "floor((" + strings.TrimSpace(parts[0]) + ")/(" + strings.TrimSpace(parts[1]) + "))"
-		sql = sql[:i] + repl + sql[close+1:]
+		sql = sql[:i] + repl + sql[end+1:]
 	}
 }
 
-// rewriteMultiIfAll replaces every multiIf(...) call (paren-aware, may nest)
-// with a CASE expression.
-func rewriteMultiIfAll(sql string) string {
-	const kw = "multiIf("
-	for {
-		i := strings.Index(sql, kw)
-		if i < 0 {
-			return sql
-		}
-		open := i + len(kw) - 1 // index of '('
-		close := matchParen(sql, open)
-		if close < 0 {
-			return sql // unbalanced; leave for the tripwire
-		}
-		inner := sql[open+1 : close]
-		sql = sql[:i] + rewriteMultiIf(inner) + sql[close+1:]
+// multiIfToCase turns c1,v1,c2,v2,...,else into a CASE expression.
+func multiIfToCase(args []string) (string, bool) {
+	if len(args) < 3 || len(args)%2 == 0 {
+		return "", false
 	}
+	var b strings.Builder
+	b.WriteString("CASE")
+	i := 0
+	for ; i+1 < len(args); i += 2 {
+		fmt.Fprintf(&b, " WHEN %s THEN %s", args[i], args[i+1])
+	}
+	fmt.Fprintf(&b, " ELSE %s END", args[i])
+	return b.String(), true
+}
+
+// intDivToFloor turns a, b into floor((a)/(b)).
+func intDivToFloor(args []string) (string, bool) {
+	if len(args) != 2 {
+		return "", false
+	}
+	return fmt.Sprintf("floor((%s)/(%s))", args[0], args[1]), true
 }
 
 // matchParen returns the index of the ')' matching the '(' at open, or -1.
@@ -179,30 +187,10 @@ func matchParen(s string, open int) int {
 	return -1
 }
 
-// rewriteMultiIf turns c1,v1,c2,v2,...,else into a CASE expression.
-func rewriteMultiIf(inner string) string {
-	parts := splitTopLevel(inner)
-	if len(parts) < 3 || len(parts)%2 == 0 {
-		return "multiIf(" + inner + ")" // not the shape we handle; leave for the tripwire
-	}
-	var b strings.Builder
-	b.WriteString("CASE")
-	i := 0
-	for ; i+1 < len(parts); i += 2 {
-		b.WriteString(" WHEN ")
-		b.WriteString(strings.TrimSpace(parts[i]))
-		b.WriteString(" THEN ")
-		b.WriteString(strings.TrimSpace(parts[i+1]))
-	}
-	b.WriteString(" ELSE ")
-	b.WriteString(strings.TrimSpace(parts[i]))
-	b.WriteString(" END")
-	return b.String()
-}
-
-// splitTopLevel splits on commas not nested inside parentheses.
-func splitTopLevel(s string) []string {
-	var parts []string
+// splitArgs splits a call's argument list on top-level commas (ignoring commas
+// nested in parentheses) and trims surrounding whitespace from each argument.
+func splitArgs(s string) []string {
+	var args []string
 	depth, start := 0, 0
 	for i, r := range s {
 		switch r {
@@ -212,13 +200,12 @@ func splitTopLevel(s string) []string {
 			depth--
 		case ',':
 			if depth == 0 {
-				parts = append(parts, s[start:i])
+				args = append(args, strings.TrimSpace(s[start:i]))
 				start = i + 1
 			}
 		}
 	}
-	parts = append(parts, s[start:])
-	return parts
+	return append(args, strings.TrimSpace(s[start:]))
 }
 
 // Translate rewrites a known Coroot ClickHouse SELECT into StarRocks SQL.
