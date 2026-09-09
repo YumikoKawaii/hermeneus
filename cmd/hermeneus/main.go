@@ -15,8 +15,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	cfg := config.Default()
-	// TODO: load YAML over defaults from --config.
+	cfg := config.FromEnv()
 
 	sr, err := starrocks.New(cfg.StarRocks)
 	if err != nil {

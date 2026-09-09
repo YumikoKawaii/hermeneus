@@ -1,5 +1,7 @@
 package config
 
+import "os"
+
 type Config struct {
 	ListenAddr string    `yaml:"listenAddr"`
 	Server     CHServer  `yaml:"server"`
@@ -35,4 +37,34 @@ func Default() Config {
 			Database:        "default",
 		},
 	}
+}
+
+// FromEnv overlays environment variables onto Default. Empty vars are ignored.
+//   HERMENEUS_LISTEN_ADDR        e.g. ":9000"
+//   HERMENEUS_DATABASE           StarRocks db (also the CH database name advertised)
+//   HERMENEUS_SR_MYSQL_DSN       go-sql-driver DSN for the :9030 query path
+//   HERMENEUS_SR_STREAM_LOAD_HOST  host:port of the SR FE HTTP (:8030) for Stream Load
+//   HERMENEUS_SR_STREAM_LOAD_USER / _PASS
+func FromEnv() Config {
+	c := Default()
+	if v := os.Getenv("HERMENEUS_LISTEN_ADDR"); v != "" {
+		c.ListenAddr = v
+	}
+	if v := os.Getenv("HERMENEUS_DATABASE"); v != "" {
+		c.Server.Database = v
+		c.StarRocks.Database = v
+	}
+	if v := os.Getenv("HERMENEUS_SR_MYSQL_DSN"); v != "" {
+		c.StarRocks.MySQLDSN = v
+	}
+	if v := os.Getenv("HERMENEUS_SR_STREAM_LOAD_HOST"); v != "" {
+		c.StarRocks.StreamLoadHost = v
+	}
+	if v := os.Getenv("HERMENEUS_SR_STREAM_LOAD_USER"); v != "" {
+		c.StarRocks.StreamLoadUser = v
+	}
+	if v := os.Getenv("HERMENEUS_SR_STREAM_LOAD_PASS"); v != "" {
+		c.StarRocks.StreamLoadPass = v
+	}
+	return c
 }

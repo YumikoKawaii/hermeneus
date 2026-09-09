@@ -1,0 +1,76 @@
+name: hermeneus-sim
+
+# Simulates the Coroot -> Hermeneus -> StarRocks path.
+# Coroot bootstraps its ClickHouse connection at hermeneus:9000, believing it is
+# ClickHouse; Hermeneus translates to StarRocks. The eBPF agents and Prometheus
+# from Coroot's stock compose are omitted — they feed the metrics/host path, not
+# the ClickHouse-served views this shim replaces.
+
+services:
+  starrocks:
+    image: starrocks/allin1-ubuntu:3.3-latest
+    ports:
+      - '127.0.0.1:9030:9030'   # MySQL protocol (query path)
+      - '127.0.0.1:8030:8030'   # FE HTTP (Stream Load)
+    healthcheck:
+      test: ["CMD", "mysql", "-h", "127.0.0.1", "-P", "9030", "-u", "root", "-e", "SELECT 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 40s
+
+  # Applies the StarRocks schema once StarRocks is healthy, then exits.
+  migrate:
+    image: mysql:8.4
+    depends_on:
+      starrocks:
+        condition: service_healthy
+    volumes:
+      - ./migrations:/migrations:ro
+      - ./scripts/seed.sql:/seed.sql:ro
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        mysql -h starrocks -P 9030 -u root -e "CREATE DATABASE IF NOT EXISTS hermeneus"
+        for f in /migrations/0001_logs.sql /migrations/0002_traces.sql /migrations/0003_profiles.sql; do
+          echo "applying $$f"
+          grep -v '^[[:space:]]*--' "$$f" | mysql -h starrocks -P 9030 -u root hermeneus
+        done
+        echo "seeding"
+        grep -v '^[[:space:]]*--' /seed.sql | mysql -h starrocks -P 9030 -u root hermeneus
+        echo "done"
+
+  hermeneus:
+    build: .
+    image: hermeneus:local
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      HERMENEUS_LISTEN_ADDR: ':9000'
+      HERMENEUS_DATABASE: 'hermeneus'
+      HERMENEUS_SR_MYSQL_DSN: 'root:@tcp(starrocks:9030)/hermeneus'
+      HERMENEUS_SR_STREAM_LOAD_HOST: 'starrocks:8030'
+      HERMENEUS_SR_STREAM_LOAD_USER: 'root'
+      HERMENEUS_SR_STREAM_LOAD_PASS: ''
+    ports:
+      - '127.0.0.1:9000:9000'
+
+  coroot:
+    image: ghcr.io/coroot/coroot
+    pull_policy: always
+    user: root
+    volumes:
+      - coroot_data:/data
+    ports:
+      - '127.0.0.1:8080:8080'
+    command:
+      - '--data-dir=/data'
+      - '--bootstrap-clickhouse-address=hermeneus:9000'
+      - '--bootstrap-clickhouse-database=hermeneus'
+      - '--bootstrap-refresh-interval=15s'
+    depends_on:
+      - hermeneus
+
+volumes:
+  coroot_data:
