@@ -2,6 +2,7 @@ package chserver
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"io"
 	"log"
@@ -9,17 +10,22 @@ import (
 
 	"github.com/ClickHouse/ch-go/proto"
 	"github.com/yumikokawaii/hermeneus/internal/config"
-	"github.com/yumikokawaii/hermeneus/internal/starrocks"
 	"github.com/yumikokawaii/hermeneus/internal/system"
 	"github.com/yumikokawaii/hermeneus/internal/translate"
 )
 
-type Server struct {
-	cfg config.Config
-	sr  *starrocks.Client
+// StarRocks is the subset of *starrocks.Client the server depends on. Declaring
+// it here (consumer side) lets the server be tested against a fake backend.
+type StarRocks interface {
+	Query(ctx context.Context, sqlText string) (*sql.Rows, error)
 }
 
-func New(cfg config.Config, sr *starrocks.Client) *Server {
+type Server struct {
+	cfg config.Config
+	sr  StarRocks
+}
+
+func New(cfg config.Config, sr StarRocks) *Server {
 	return &Server{cfg: cfg, sr: sr}
 }
 
