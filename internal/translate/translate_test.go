@@ -64,6 +64,16 @@ func TestTranslate(t *testing.T) {
 			want: "WITH samples AS (SELECT StackHash AS hash, sum(Value) AS value FROM profiling_samples GROUP BY StackHash), stacks AS (SELECT Hash AS hash, any_value(Stack) AS stack FROM profiling_stacks WHERE Hash IN (SELECT hash FROM samples) GROUP BY Hash) SELECT value, stack FROM stacks JOIN samples USING(hash)",
 		},
 		{
+			name: "getSpansHistogram raw branch roundDown -> CASE",
+			sql:  "SELECT toStartOfInterval(Timestamp, INTERVAL 60 second), roundDown(Duration/1000000, [0, 5, 10]), count(1), countIf(StatusCode = 'STATUS_CODE_ERROR') FROM otel_traces WHERE ServiceName = 'x' GROUP BY 1, 2",
+			want: "SELECT from_unixtime(floor(unix_timestamp(Timestamp)/60)*60), CASE WHEN (Duration/1000000) >= 10 THEN 10 WHEN (Duration/1000000) >= 5 THEN 5 ELSE 0 END, count(1), count(if(StatusCode = 'STATUS_CODE_ERROR',1,null)) FROM otel_traces WHERE ServiceName = 'x' GROUP BY 1, 2",
+		},
+		{
+			name: "getSpansHistogram MV branch passthrough",
+			sql:  "SELECT toStartOfInterval(Timestamp, INTERVAL 60 second), Bucket, sum(Total), sum(Failed) FROM otel_traces_histogram WHERE ServiceName = 'x' GROUP BY 1, 2",
+			want: "SELECT from_unixtime(floor(unix_timestamp(Timestamp)/60)*60), Bucket, sum(Total), sum(Failed) FROM otel_traces_histogram WHERE ServiceName = 'x' GROUP BY 1, 2",
+		},
+		{
 			name:    "unknown query trips the wire",
 			sql:     "SELECT ServiceName, Timestamp FROM otel_logs LIMIT 5",
 			wantErr: true,
@@ -118,6 +128,7 @@ func TestRewriteConstructs(t *testing.T) {
 		{"has", "has(@containers, Labels['id'])", "array_contains(@containers, Labels['id'])"},
 		{"empty", "empty(@containers)", "array_length(@containers) = 0"},
 		{"toInt64", "toInt64(value/profiles)", "cast(value/profiles as bigint)"},
+		{"roundDown", "roundDown(Duration/1000000, [0, 5, 10])", "CASE WHEN (Duration/1000000) >= 10 THEN 10 WHEN (Duration/1000000) >= 5 THEN 5 ELSE 0 END"},
 		{"global in", "Hash GLOBAL IN (SELECT hash FROM samples)", "Hash IN (SELECT hash FROM samples)"},
 	}
 	for _, tt := range tests {

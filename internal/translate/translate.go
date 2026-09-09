@@ -169,6 +169,40 @@ var registry = []registered{
 		}},
 	},
 	{
+		// getSpansHistogram (traces.go Q3 MV branch / Q4 raw branch): same shape.
+		//   MV:  SELECT toStartOfInterval(..), Bucket, sum(Total), sum(Failed) FROM otel_traces_histogram ...
+		//   raw: SELECT toStartOfInterval(..), roundDown(Duration/1000000, [..]), count(1), countIf(..) FROM otel_traces ...
+		match: func(n string) bool {
+			return (strings.HasPrefix(n, "SELECT toStartOfInterval(Timestamp,") &&
+				strings.Contains(n, ", Bucket, sum(Total), sum(Failed) FROM otel_traces_histogram")) ||
+				(strings.HasPrefix(n, "SELECT toStartOfInterval(Timestamp,") &&
+					strings.Contains(n, "roundDown(Duration/1000000,") && strings.Contains(n, "FROM otel_traces"))
+		},
+		shape: ResultShape{Columns: []Column{
+			{Name: "ts", CHType: "DateTime"},
+			{Name: "bucket", CHType: "Float64"},
+			{Name: "total", CHType: "UInt64"},
+			{Name: "failed", CHType: "UInt64"},
+		}},
+	},
+	{
+		// getTraceSpanStats (traces.go Q5 MV branch / Q6 raw branch): same shape.
+		//   MV:  SELECT ServiceName, SpanName, Bucket, sum(Total), sum(Failed) FROM otel_traces_histogram ...
+		//   raw: SELECT ServiceName, SpanName, roundDown(Duration/1000000, [..]), count(1), countIf(..) FROM otel_traces ...
+		match: func(n string) bool {
+			return strings.HasPrefix(n, "SELECT ServiceName, SpanName, Bucket, sum(Total), sum(Failed) FROM otel_traces_histogram") ||
+				(strings.HasPrefix(n, "SELECT ServiceName, SpanName, roundDown(Duration/1000000,") &&
+					strings.Contains(n, "FROM otel_traces"))
+		},
+		shape: ResultShape{Columns: []Column{
+			{Name: "ServiceName", CHType: "String"},
+			{Name: "SpanName", CHType: "String"},
+			{Name: "bucket", CHType: "Float64"},
+			{Name: "total", CHType: "UInt64"},
+			{Name: "failed", CHType: "UInt64"},
+		}},
+	},
+	{
 		// getProfile (profiles.go Q11, qProfile):
 		//   WITH samples AS (...), stacks AS (...) SELECT value, stack FROM stacks JOIN samples USING(hash)
 		match: func(n string) bool {
@@ -226,8 +260,46 @@ func rewriteConstructs(sql string) string {
 	sql = rewriteCall(sql, "has", hasToArrayContains)
 	sql = rewriteCall(sql, "empty", emptyToArrayLength)
 	sql = rewriteCall(sql, "toInt64", toInt64ToCast)
+	sql = rewriteCall(sql, "roundDown", roundDownToCase)
 	sql = globalInRe.ReplaceAllString(sql, "IN")
 	return sql
+}
+
+// roundDownToCase turns roundDown(x, [b0,b1,...,bn]) into a CASE ladder that
+// snaps x down to the largest boundary <= x — StarRocks has no roundDown.
+// The bucket array is a client-bound literal ([...]) by the time we see it, so
+// its boundaries are known at translate time (see traces.go HistogramBuckets).
+// Emitted highest-first so the first matching WHEN wins; below b0 yields b0.
+func roundDownToCase(args []string) (string, bool) {
+	if len(args) != 2 {
+		return "", false
+	}
+	expr := args[0]
+	bounds := parseArrayLiteral(args[1])
+	if len(bounds) == 0 {
+		return "", false
+	}
+	var b strings.Builder
+	b.WriteString("CASE")
+	for i := len(bounds) - 1; i >= 1; i-- {
+		fmt.Fprintf(&b, " WHEN (%s) >= %s THEN %s", expr, bounds[i], bounds[i])
+	}
+	fmt.Fprintf(&b, " ELSE %s END", bounds[0])
+	return b.String(), true
+}
+
+// parseArrayLiteral splits a `[a, b, c]` literal into its top-level elements.
+// Returns nil if s is not bracket-wrapped.
+func parseArrayLiteral(s string) []string {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "[") || !strings.HasSuffix(s, "]") {
+		return nil
+	}
+	inner := strings.TrimSpace(s[1 : len(s)-1])
+	if inner == "" {
+		return nil
+	}
+	return splitArgs(inner)
 }
 
 // toInt64(x) -> cast(x as bigint)
@@ -344,15 +416,16 @@ func matchParen(s string, open int) int {
 }
 
 // splitArgs splits a call's argument list on top-level commas (ignoring commas
-// nested in parentheses) and trims surrounding whitespace from each argument.
+// nested in parentheses or brackets) and trims whitespace from each argument.
+// Bracket-awareness keeps array literals like [0, 5, 10] as one argument.
 func splitArgs(s string) []string {
 	var args []string
 	depth, start := 0, 0
 	for i, r := range s {
 		switch r {
-		case '(':
+		case '(', '[':
 			depth++
-		case ')':
+		case ')', ']':
 			depth--
 		case ',':
 			if depth == 0 {

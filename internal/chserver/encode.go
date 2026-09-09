@@ -47,6 +47,16 @@ func newAppender(name, chType string) (appender, error) {
 			c.Append(v)
 			return nil
 		}}, nil
+	case "Float64":
+		c := new(proto.ColFloat64)
+		return appender{proto.InputColumn{Name: name, Data: c}, func(raw []byte) error {
+			v, err := strconv.ParseFloat(string(raw), 64)
+			if err != nil {
+				return err
+			}
+			c.Append(v)
+			return nil
+		}}, nil
 	case "DateTime":
 		c := new(proto.ColDateTime)
 		return appender{proto.InputColumn{Name: name, Data: c}, func(raw []byte) error {
