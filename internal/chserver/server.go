@@ -7,10 +7,15 @@ import (
 	"log"
 	"net"
 
+	"database/sql"
+	"fmt"
+	"time"
+
 	"github.com/ClickHouse/ch-go/proto"
 	"github.com/yumikokawaii/hermeneus/internal/config"
 	"github.com/yumikokawaii/hermeneus/internal/starrocks"
 	"github.com/yumikokawaii/hermeneus/internal/system"
+	"github.com/yumikokawaii/hermeneus/internal/translate"
 )
 
 type Server struct {
@@ -105,16 +110,33 @@ func (s *Server) handleQuery(conn net.Conn, r *proto.Reader, buf *proto.Buffer, 
 		return err
 	}
 
-	sql := q.Body
-	if cols, ok := system.Match(sql, s.cfg.Server.Database); ok {
+	body := q.Body
+	if cols, ok := system.Match(body, s.cfg.Server.Database); ok {
 		return s.sendResult(conn, buf, ver, cols)
 	}
-	if system.IsDDL(sql) {
+	if system.IsDDL(body) {
 		return s.sendResult(conn, buf, ver, nil)
 	}
 
-	log.Printf("unrecognised query: %s", sql)
-	return s.sendException(conn, buf, ver, "hermeneus: unrecognised query")
+	tr, err := translate.Translate(body)
+	if err != nil {
+		log.Printf("unrecognised query: %s", body)
+		return s.sendException(conn, buf, ver, "hermeneus: unrecognised query")
+	}
+
+	rows, err := s.sr.Query(context.Background(), tr.SQL)
+	if err != nil {
+		log.Printf("starrocks query failed: %v (sql=%s)", err, tr.SQL)
+		return s.sendException(conn, buf, ver, "hermeneus: starrocks query failed")
+	}
+	defer rows.Close()
+
+	cols, err := encodeRows(rows, tr.Shape)
+	if err != nil {
+		log.Printf("encode rows: %v", err)
+		return s.sendException(conn, buf, ver, "hermeneus: result encode failed")
+	}
+	return s.sendResult(conn, buf, ver, cols)
 }
 
 // drainClientData reads the empty ClientData block that follows a query body.
@@ -214,4 +236,108 @@ func (s *Server) flush(conn net.Conn, buf *proto.Buffer) error {
 	_, err := conn.Write(buf.Buf)
 	buf.Reset()
 	return err
+}
+
+// chColumn builds an empty ch column for the declared CH type.
+func chColumn(chType string) (proto.ColInput, func(v any) error, error) {
+	switch chType {
+	case "String":
+		c := new(proto.ColStr)
+		return c, func(v any) error { c.Append(toStr(v)); return nil }, nil
+	case "Int64":
+		c := new(proto.ColInt64)
+		return c, func(v any) error {
+			i, err := toInt64(v)
+			if err != nil {
+				return err
+			}
+			c.Append(i)
+			return nil
+		}, nil
+	case "UInt64":
+		c := new(proto.ColUInt64)
+		return c, func(v any) error {
+			i, err := toInt64(v)
+			if err != nil {
+				return err
+			}
+			c.Append(uint64(i))
+			return nil
+		}, nil
+	case "DateTime":
+		c := new(proto.ColDateTime)
+		return c, func(v any) error {
+			t, err := toTime(v)
+			if err != nil {
+				return err
+			}
+			c.Append(t)
+			return nil
+		}, nil
+	default:
+		return nil, nil, fmt.Errorf("unsupported CH type %q", chType)
+	}
+}
+
+// encodeRows maps StarRocks rows into ch columns per the declared shape.
+func encodeRows(rows *sql.Rows, shape translate.ResultShape) ([]proto.InputColumn, error) {
+	n := len(shape.Columns)
+	cols := make([]proto.InputColumn, n)
+	appends := make([]func(v any) error, n)
+	for i, col := range shape.Columns {
+		data, appendFn, err := chColumn(col.CHType)
+		if err != nil {
+			return nil, err
+		}
+		cols[i] = proto.InputColumn{Name: col.Name, Data: data}
+		appends[i] = appendFn
+	}
+
+	for rows.Next() {
+		scan := make([]any, n)
+		holders := make([]sql.RawBytes, n)
+		for i := range scan {
+			scan[i] = &holders[i]
+		}
+		if err := rows.Scan(scan...); err != nil {
+			return nil, err
+		}
+		for i := range holders {
+			if err := appends[i]([]byte(holders[i])); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return cols, rows.Err()
+}
+
+func toStr(v any) string {
+	switch x := v.(type) {
+	case []byte:
+		return string(x)
+	case string:
+		return x
+	default:
+		return fmt.Sprint(x)
+	}
+}
+
+func toInt64(v any) (int64, error) {
+	var i int64
+	_, err := fmt.Sscan(toStr(v), &i)
+	return i, err
+}
+
+func toTime(v any) (time.Time, error) {
+	s := toStr(v)
+	for _, layout := range []string{"2006-01-02 15:04:05", time.RFC3339, "2006-01-02 15:04:05.999999"} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t, nil
+		}
+	}
+	// StarRocks from_unixtime may return an epoch-like numeric string.
+	if i, err := toInt64(v); err == nil {
+		return time.Unix(i, 0).UTC(), nil
+	}
+	return time.Time{}, fmt.Errorf("cannot parse time %q", s)
 }

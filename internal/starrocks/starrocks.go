@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 
+	_ "github.com/go-sql-driver/mysql"
 	"github.com/yumikokawaii/hermeneus/internal/config"
 )
 
@@ -16,15 +17,21 @@ type Client struct {
 }
 
 func New(cfg config.StarRocks) (*Client, error) {
-	// TODO(M2): sql.Open("mysql", cfg.MySQLDSN), Ping.
-	return &Client{cfg: cfg}, nil
+	if cfg.MySQLDSN == "" {
+		return &Client{cfg: cfg}, nil
+	}
+	db, err := sql.Open("mysql", cfg.MySQLDSN)
+	if err != nil {
+		return nil, err
+	}
+	return &Client{cfg: cfg, db: db}, nil
 }
 
-// Query runs a translated StarRocks SELECT with bound args and returns rows for
-// the server to re-encode as a ClickHouse block.
-// TODO(M2): implement; map @name placeholders -> positional args.
-func (c *Client) Query(ctx context.Context, sqlText string, args map[string]any) (*sql.Rows, error) {
-	panic("TODO: Query")
+// Query runs a translated StarRocks SELECT and returns rows for the server to
+// re-encode as a ClickHouse block. Coroot binds args client-side, so sqlText is
+// already concrete — no placeholder binding needed here.
+func (c *Client) Query(ctx context.Context, sqlText string) (*sql.Rows, error) {
+	return c.db.QueryContext(ctx, sqlText)
 }
 
 // Batch is a decoded set of INSERT rows destined for one StarRocks table.
