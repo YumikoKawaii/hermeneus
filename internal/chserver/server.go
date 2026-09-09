@@ -10,6 +10,7 @@ import (
 
 	"github.com/ClickHouse/ch-go/proto"
 	"github.com/yumikokawaii/hermeneus/internal/config"
+	"github.com/yumikokawaii/hermeneus/internal/starrocks"
 	"github.com/yumikokawaii/hermeneus/internal/system"
 	"github.com/yumikokawaii/hermeneus/internal/translate"
 )
@@ -18,6 +19,7 @@ import (
 // it here (consumer side) lets the server be tested against a fake backend.
 type StarRocks interface {
 	Query(ctx context.Context, sqlText string) (*sql.Rows, error)
+	StreamLoad(ctx context.Context, b starrocks.Batch) error
 }
 
 type Server struct {
@@ -100,12 +102,17 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 
 // handleQuery decodes a client query, drains any trailing empty data block, and
 // routes it: system.* probe -> canned block; DDL -> swallow; known SELECT ->
-// translate + StarRocks query -> result block; anything else -> exception (the
-// tripwire). INSERT -> Stream Load lands in M3.
+// translate + StarRocks query -> result block; INSERT -> decode blocks +
+// Stream Load; anything else -> exception (the tripwire).
 func (s *Server) handleQuery(conn net.Conn, r *proto.Reader, buf *proto.Buffer, ver int) error {
 	var q proto.Query
 	if err := q.DecodeAware(r, ver); err != nil {
 		return err
+	}
+
+	body := q.Body
+	if translate.Classify(body) == translate.KindInsert {
+		return s.handleInsert(conn, r, buf, ver, body)
 	}
 
 	// Coroot's ch-go sends a trailing empty data block after the query body.
@@ -113,7 +120,6 @@ func (s *Server) handleQuery(conn net.Conn, r *proto.Reader, buf *proto.Buffer, 
 		return err
 	}
 
-	body := q.Body
 	if cols, ok := system.Match(body, s.cfg.Server.Database); ok {
 		return s.sendResult(conn, buf, ver, cols)
 	}

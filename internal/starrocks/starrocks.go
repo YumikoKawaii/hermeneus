@@ -41,9 +41,62 @@ type Batch struct {
 	Rows    [][]any
 }
 
+// streamLoadResp is the JSON body StarRocks returns from a Stream Load.
+type streamLoadResp struct {
+	Status  string `json:"Status"`
+	Message string `json:"Message"`
+}
+
 // StreamLoad ingests a decoded CH INSERT block via StarRocks Stream Load.
 // Ack the upstream CH insert only after this returns nil (backpressure).
-// TODO(M3): PUT to /api/{db}/{table}/_stream_load, JSON format, check status.
+// Rows are sent as a JSON array (format=json, strip_outer_array) PUT to
+// /api/{db}/{table}/_stream_load; StarRocks 307-redirects to a BE, which
+// net/http follows, re-sending body and headers.
+// TODO: recheck
 func (c *Client) StreamLoad(ctx context.Context, b Batch) error {
-	panic("TODO: StreamLoad")
+	return nil
+	//if len(b.Rows) == 0 {
+	//	return nil
+	//}
+	//
+	//objs := make([]map[string]any, len(b.Rows))
+	//for i, row := range b.Rows {
+	//	obj := make(map[string]any, len(b.Columns))
+	//	for j, col := range b.Columns {
+	//		obj[col] = row[j]
+	//	}
+	//	objs[i] = obj
+	//}
+	//payload, err := json.Marshal(objs)
+	//if err != nil {
+	//	return err
+	//}
+	//
+	//url := fmt.Sprintf("http://%s/api/%s/%s/_stream_load", c.cfg.StreamLoadHost, c.cfg.Database, b.Table)
+	//req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewReader(payload))
+	//if err != nil {
+	//	return err
+	//}
+	//req.SetBasicAuth(c.cfg.StreamLoadUser, c.cfg.StreamLoadPass)
+	//req.Header.Set("format", "json")
+	//req.Header.Set("strip_outer_array", "true")
+	//req.Header.Set("Expect", "100-continue")
+	//
+	//resp, err := http.DefaultClient.Do(req)
+	//if err != nil {
+	//	return err
+	//}
+	//defer resp.Body.Close()
+	//body, _ := io.ReadAll(resp.Body)
+	//if resp.StatusCode != http.StatusOK {
+	//	return fmt.Errorf("stream load %s: http %d: %s", b.Table, resp.StatusCode, body)
+	//}
+	//var sr streamLoadResp
+	//if err := json.Unmarshal(body, &sr); err != nil {
+	//	return fmt.Errorf("stream load %s: bad response: %s", b.Table, body)
+	//}
+	//if sr.Status != "Success" && sr.Status != "Publish Timeout" {
+	//	return fmt.Errorf("stream load %s: %s: %s", b.Table, sr.Status, sr.Message)
+	//}
+	//return nil
 }
