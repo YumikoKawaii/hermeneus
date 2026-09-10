@@ -1,89 +1,121 @@
 package chserver
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"log"
 	"regexp"
+	"strings"
+	"time"
 
 	"github.com/ClickHouse/ch-go/proto"
-	"github.com/yumikokawaii/hermeneus/internal/starrocks"
+	"github.com/yumikokawaii/hermeneus/internal/sink"
 )
 
-// insertTableRe pulls the target table out of an INSERT statement. Coroot emits
-// `INSERT INTO otel_logs (...) VALUES` / `... FORMAT Native`; the column list and
-// tail are ignored — column identity comes from the streamed block header.
-var insertTableRe = regexp.MustCompile(`(?is)^\s*INSERT\s+INTO\s+` + "`?" + `([A-Za-z_][A-Za-z0-9_.]*)` + "`?")
+var insertRe = regexp.MustCompile("(?is)^\\s*INSERT\\s+INTO\\s+[`\"]?([A-Za-z_][A-Za-z0-9_.]*)[`\"]?\\s*\\(([^)]*)\\)")
 
-// handleInsert consumes the ClientData blocks that follow an INSERT query,
-// decodes them into a Batch, ships the Batch via StarRocks Stream Load, and only
-// then acks with an empty result. Stream Load failure surfaces as a CH exception
-// so Coroot retries (backpressure, docs/DESIGN.md §5).
-//
-// TODO(M3): incomplete — still to do:
-//   - bound in-flight batch size / flush by rows|bytes instead of buffering the
-//     whole insert stream in memory
-//   - nested/typed columns Coroot actually streams (Map, Array, DateTime64,
-//     Nested Events.*) verified against real block headers, not assumed
-//   - per-table column→StarRocks mapping; today table name + column names are
-//     passed through verbatim
-//   - LZ4-compressed block path
-//   - dedicated Stream Load label for idempotent retry
-func (s *Server) handleInsert(cc *connCtx, body string) error {
-	return nil
-	// When implemented, decode each block compression-aware:
-	//   if cc.compressed { cc.r.EnableCompression(); defer cc.r.DisableCompression() }
-	// around block.DecodeBlock, mirroring drainClientData.
-	//
-	//m := insertTableRe.FindStringSubmatch(body)
-	//if m == nil {
-	//	return nil
-	//}
-	//batch := starrocks.Batch{Table: m[1]}
-	//
-	//for {
-	//	n, err := cc.r.UVarInt()
-	//	if err != nil {
-	//		return nil
-	//	}
-	//	if proto.ClientCode(n) != proto.ClientCodeData {
-	//		return nil
-	//	}
-	//	var data proto.ClientData
-	//	if err := data.DecodeAware(cc.r, cc.ver); err != nil {
-	//		return nil
-	//	}
-	//	var results proto.Results
-	//	var block proto.Block
-	//	if err := block.DecodeBlock(cc.r, cc.ver, results.Auto()); err != nil {
-	//		return nil
-	//	}
-	//	if block.Rows == 0 {
-	//		break // trailing empty block ends the stream
-	//	}
-	//	if err := appendBlock(&batch, results); err != nil {
-	//		return nil
-	//	}
-	//}
-	//
-	//if err := s.sr.StreamLoad(context.Background(), batch); err != nil {
-	//	return nil
-	//}
-	//return s.sendResult(cc, nil)
-}
+const srDateTime = "2006-01-02 15:04:05.000000"
 
-// appendBlock reads decoded columns from a ClientData block into the Batch,
-// converting each cell to a JSON-marshalable Go value.
-func appendBlock(b *starrocks.Batch, cols proto.Results) error {
-	if len(cols) == 0 {
-		return nil
+func parseInsert(body string) (table string, cols []string, ok bool) {
+	m := insertRe.FindStringSubmatch(body)
+	if m == nil {
+		return "", nil, false
 	}
-	if b.Columns == nil {
-		b.Columns = make([]string, len(cols))
-		for i, c := range cols {
-			b.Columns[i] = c.Name
+	table = m[1]
+	if i := strings.LastIndex(table, "."); i >= 0 {
+		table = table[i+1:]
+	}
+	for _, c := range strings.Split(m[2], ",") {
+		c = strings.Trim(strings.TrimSpace(c), "`\"")
+		if c != "" {
+			cols = append(cols, c)
 		}
 	}
+	return table, cols, len(cols) > 0
+}
+
+func (s *Server) handleInsert(cc *connCtx, body string) error {
+	if err := s.drainClientData(cc); err != nil {
+		return err
+	}
+	table, names, ok := parseInsert(body)
+	if !ok {
+		return s.sendException(cc.conn, cc.buf, cc.ver, "hermeneus: cannot parse INSERT")
+	}
+	schema, ok := insertSchemas[table]
+	if !ok {
+		log.Printf("insert into unknown table %q", table)
+		return s.sendException(cc.conn, cc.buf, cc.ver, "hermeneus: unknown insert table "+table)
+	}
+	results := make(proto.Results, len(names))
+	header := make([]proto.InputColumn, len(names))
+	for i, n := range names {
+		f, ok := schema[n]
+		if !ok {
+			log.Printf("insert into %s: unknown column %q", table, n)
+			return s.sendException(cc.conn, cc.buf, cc.ver, "hermeneus: unknown column "+n)
+		}
+		col := f()
+		results[i] = proto.ResultColumn{Name: n, Data: col}
+		header[i] = proto.InputColumn{Name: n, Data: col}
+	}
+
+	if err := s.writeBlock(cc, header, false); err != nil {
+		return err
+	}
+
+	batch := sink.Batch{Table: table, Columns: names}
+	for {
+		code, err := s.readCode(cc.r)
+		if err != nil {
+			return err
+		}
+		if code == proto.ClientCodeCancel {
+			return s.sendEndOfStream(cc)
+		}
+		if code != proto.ClientCodeData {
+			return fmt.Errorf("insert: expected data packet, got %s", code)
+		}
+		var data proto.ClientData
+		if err := data.DecodeAware(cc.r, cc.ver); err != nil {
+			return err
+		}
+		block, err := s.decodeBlock(cc, results)
+		if err != nil {
+			return err
+		}
+		if block.End() {
+			break
+		}
+		if err := appendBlock(&batch, results); err != nil {
+			return err
+		}
+	}
+
+	if err := s.sink.Write(context.Background(), batch); err != nil {
+		log.Printf("insert %s (%d rows): sink failed: %v", table, len(batch.Rows), err)
+		return s.sendException(cc.conn, cc.buf, cc.ver, "hermeneus: insert sink failed: "+err.Error())
+	}
+	return s.sendEndOfStream(cc)
+}
+
+func (s *Server) decodeBlock(cc *connCtx, target proto.Result) (proto.Block, error) {
+	if cc.compressed {
+		cc.r.EnableCompression()
+		defer cc.r.DisableCompression()
+	}
+	var block proto.Block
+	err := block.DecodeBlock(cc.r, cc.ver, target)
+	return block, err
+}
+
+func appendBlock(b *sink.Batch, cols proto.Results) error {
+	if len(cols) == 0 {
+		return errors.New("empty block")
+	}
 	rows := cols[0].Data.Rows()
-	for i := range rows {
+	for i := 0; i < rows; i++ {
 		row := make([]any, len(cols))
 		for j, c := range cols {
 			v, err := cellValue(c.Data, i)
@@ -97,42 +129,36 @@ func appendBlock(b *starrocks.Batch, cols proto.Results) error {
 	return nil
 }
 
-// cellValue extracts row i from a decoded column as a JSON-marshalable value.
-// Covers the concrete column types Coroot streams for the OTLP tables.
-// Results.Auto() yields *proto.ColAuto wrapping the concrete column in .Data.
 func cellValue(col proto.ColResult, i int) (any, error) {
 	switch c := col.(type) {
-	case *proto.ColAuto:
-		return cellValue(c.Data, i)
 	case *proto.ColStr:
 		return c.Row(i), nil
-	case *proto.ColInt8:
-		return c.Row(i), nil
-	case *proto.ColInt16:
+	case *proto.ColLowCardinality[string]:
 		return c.Row(i), nil
 	case *proto.ColInt32:
 		return c.Row(i), nil
 	case *proto.ColInt64:
 		return c.Row(i), nil
-	case *proto.ColUInt8:
-		return c.Row(i), nil
-	case *proto.ColUInt16:
-		return c.Row(i), nil
 	case *proto.ColUInt32:
 		return c.Row(i), nil
 	case *proto.ColUInt64:
-		return c.Row(i), nil
-	case *proto.ColFloat32:
-		return c.Row(i), nil
-	case *proto.ColFloat64:
-		return c.Row(i), nil
+		return int64(c.Row(i)), nil
 	case *proto.ColDateTime:
-		return c.Row(i).UTC().Format("2006-01-02 15:04:05"), nil
+		return c.Row(i).UTC().Format(srDateTime), nil
 	case *proto.ColDateTime64:
-		return c.Row(i).UTC().Format("2006-01-02 15:04:05.000000000"), nil
+		return c.Row(i).UTC().Format(srDateTime), nil
 	case *proto.ColMap[string, string]:
 		return c.Row(i), nil
 	case *proto.ColArr[string]:
+		return c.Row(i), nil
+	case *proto.ColArr[time.Time]:
+		ts := c.Row(i)
+		out := make([]string, len(ts))
+		for k, t := range ts {
+			out[k] = t.UTC().Format(srDateTime)
+		}
+		return out, nil
+	case *proto.ColArr[map[string]string]:
 		return c.Row(i), nil
 	default:
 		return nil, fmt.Errorf("unsupported column type %T", col)

@@ -11,25 +11,23 @@ import (
 	"github.com/ClickHouse/ch-go/compress"
 	"github.com/ClickHouse/ch-go/proto"
 	"github.com/yumikokawaii/hermeneus/internal/config"
-	"github.com/yumikokawaii/hermeneus/internal/starrocks"
+	"github.com/yumikokawaii/hermeneus/internal/sink"
 	"github.com/yumikokawaii/hermeneus/internal/system"
 	"github.com/yumikokawaii/hermeneus/internal/translate"
 )
 
-// StarRocks is the subset of *starrocks.Client the server depends on. Declaring
-// it here (consumer side) lets the server be tested against a fake backend.
-type StarRocks interface {
+type Querier interface {
 	Query(ctx context.Context, sqlText string) (*sql.Rows, error)
-	StreamLoad(ctx context.Context, b starrocks.Batch) error
 }
 
 type Server struct {
-	cfg config.Config
-	sr  StarRocks
+	cfg  config.Config
+	sr   Querier
+	sink sink.Sink
 }
 
-func New(cfg config.Config, sr StarRocks) *Server {
-	return &Server{cfg: cfg, sr: sr}
+func New(cfg config.Config, sr Querier, out sink.Sink) *Server {
+	return &Server{cfg: cfg, sr: sr, sink: out}
 }
 
 func (s *Server) ListenAndServe(ctx context.Context) error {
@@ -194,11 +192,11 @@ func (s *Server) drainClientData(cc *connCtx) error {
 	return block.DecodeBlock(cc.r, cc.ver, nil)
 }
 
-// sendResult writes one data block (cols, single row when present; header-only
-// when cols is nil) followed by EndOfStream. When the client negotiated
-// compression, the block payload is LZ4-compressed in place; the packet code,
-// table name, and trailing EndOfStream stay raw (only blocks are compressed).
 func (s *Server) sendResult(cc *connCtx, cols []proto.InputColumn) error {
+	return s.writeBlock(cc, cols, true)
+}
+
+func (s *Server) writeBlock(cc *connCtx, cols []proto.InputColumn, endOfStream bool) error {
 	rows := 0
 	if len(cols) > 0 {
 		rows = cols[0].Data.Rows()
@@ -210,7 +208,6 @@ func (s *Server) sendResult(cc *connCtx, cols []proto.InputColumn) error {
 		buf.PutString("")
 	}
 
-	// Everything from here is the compressible block payload.
 	start := len(buf.Buf)
 	block := proto.Block{Columns: len(cols), Rows: rows}
 	if err := block.EncodeBlock(buf, cc.ver, cols); err != nil {
@@ -223,8 +220,16 @@ func (s *Server) sendResult(cc *connCtx, cols []proto.InputColumn) error {
 		buf.Buf = append(buf.Buf[:start], cc.compressor.Data...)
 	}
 
-	proto.ServerCodeEndOfStream.Encode(buf)
+	if endOfStream {
+		proto.ServerCodeEndOfStream.Encode(buf)
+	}
 	return s.flush(cc.conn, buf)
+}
+
+func (s *Server) sendEndOfStream(cc *connCtx) error {
+	cc.buf.Reset()
+	proto.ServerCodeEndOfStream.Encode(cc.buf)
+	return s.flush(cc.conn, cc.buf)
 }
 
 func (s *Server) handshake(conn net.Conn, r *proto.Reader, buf *proto.Buffer) (int, error) {

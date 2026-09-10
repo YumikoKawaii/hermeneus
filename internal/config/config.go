@@ -1,11 +1,16 @@
 package config
 
-import "os"
+import (
+	"os"
+	"strings"
+)
 
 type Config struct {
 	ListenAddr string    `yaml:"listenAddr"`
 	Server     CHServer  `yaml:"server"`
 	StarRocks  StarRocks `yaml:"starrocks"`
+	Sink       string    `yaml:"sink"`
+	Kafka      Kafka     `yaml:"kafka"`
 }
 
 type CHServer struct {
@@ -25,6 +30,17 @@ type StarRocks struct {
 	Database       string `yaml:"database"`
 }
 
+type Kafka struct {
+	Brokers     []string `yaml:"brokers"`
+	TopicPrefix string   `yaml:"topicPrefix"`
+	ClientID    string   `yaml:"clientID"`
+}
+
+const (
+	SinkStreamLoad = "streamload"
+	SinkKafka      = "kafka"
+)
+
 func Default() Config {
 	return Config{
 		ListenAddr: ":9000",
@@ -36,15 +52,14 @@ func Default() Config {
 			ProtocolVersion: 54465,
 			Database:        "default",
 		},
+		Sink: SinkStreamLoad,
+		Kafka: Kafka{
+			TopicPrefix: "hermeneus.",
+			ClientID:    "hermeneus",
+		},
 	}
 }
 
-// FromEnv overlays environment variables onto Default. Empty vars are ignored.
-//   HERMENEUS_LISTEN_ADDR        e.g. ":9000"
-//   HERMENEUS_DATABASE           StarRocks db (also the CH database name advertised)
-//   HERMENEUS_SR_MYSQL_DSN       go-sql-driver DSN for the :9030 query path
-//   HERMENEUS_SR_STREAM_LOAD_HOST  host:port of the SR FE HTTP (:8030) for Stream Load
-//   HERMENEUS_SR_STREAM_LOAD_USER / _PASS
 func FromEnv() Config {
 	c := Default()
 	if v := os.Getenv("HERMENEUS_LISTEN_ADDR"); v != "" {
@@ -65,6 +80,18 @@ func FromEnv() Config {
 	}
 	if v := os.Getenv("HERMENEUS_SR_STREAM_LOAD_PASS"); v != "" {
 		c.StarRocks.StreamLoadPass = v
+	}
+	if v := os.Getenv("HERMENEUS_SINK"); v != "" {
+		c.Sink = strings.ToLower(v)
+	}
+	if v := os.Getenv("HERMENEUS_KAFKA_BROKERS"); v != "" {
+		c.Kafka.Brokers = strings.Split(v, ",")
+	}
+	if v := os.Getenv("HERMENEUS_KAFKA_TOPIC_PREFIX"); v != "" {
+		c.Kafka.TopicPrefix = v
+	}
+	if v := os.Getenv("HERMENEUS_KAFKA_CLIENT_ID"); v != "" {
+		c.Kafka.ClientID = v
 	}
 	return c
 }
