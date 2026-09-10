@@ -27,12 +27,8 @@ type Client struct {
 func New(cfg config.StarRocks) (*Client, error) {
 	c := &Client{cfg: cfg, http: &http.Client{
 		Timeout: 5 * time.Minute,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 10 {
-				return errors.New("stream load: too many redirects")
-			}
-			req.SetBasicAuth(cfg.StreamLoadUser, cfg.StreamLoadPass)
-			return nil
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
 		},
 	}}
 	if cfg.MySQLDSN == "" {
@@ -87,19 +83,16 @@ func (c *Client) Write(ctx context.Context, b sink.Batch) error {
 		return err
 	}
 
-	url := fmt.Sprintf("http://%s/api/%s/%s/_stream_load", c.cfg.StreamLoadHost, c.cfg.Database, b.Table)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewReader(payload))
-	if err != nil {
-		return err
+	headers := map[string]string{
+		"label":             "hermeneus-" + b.Table + "-" + uuid.NewString(),
+		"format":            "json",
+		"strip_outer_array": "true",
+		"jsonpaths":         "[" + strings.Join(paths, ",") + "]",
+		"columns":           strings.Join(cols, ","),
+		"Expect":            "100-continue",
 	}
-	req.SetBasicAuth(c.cfg.StreamLoadUser, c.cfg.StreamLoadPass)
-	req.Header.Set("label", "hermeneus-"+b.Table+"-"+uuid.NewString())
-	req.Header.Set("format", "json")
-	req.Header.Set("strip_outer_array", "true")
-	req.Header.Set("jsonpaths", "["+strings.Join(paths, ",")+"]")
-	req.Header.Set("columns", strings.Join(cols, ","))
-
-	resp, err := c.http.Do(req)
+	url := fmt.Sprintf("http://%s/api/%s/%s/_stream_load", c.cfg.StreamLoadHost, c.cfg.Database, b.Table)
+	resp, err := c.put(ctx, url, payload, headers)
 	if err != nil {
 		return err
 	}
@@ -116,4 +109,31 @@ func (c *Client) Write(ctx context.Context, b sink.Batch) error {
 		return fmt.Errorf("stream load %s: %s: %s %s", b.Table, sr.Status, sr.Message, sr.ErrorURL)
 	}
 	return nil
+}
+
+func (c *Client) put(ctx context.Context, url string, payload []byte, headers map[string]string) (*http.Response, error) {
+	for hop := 0; hop < 10; hop++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewReader(payload))
+		if err != nil {
+			return nil, err
+		}
+		req.SetBasicAuth(c.cfg.StreamLoadUser, c.cfg.StreamLoadPass)
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		resp, err := c.http.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode != http.StatusTemporaryRedirect && resp.StatusCode != http.StatusPermanentRedirect {
+			return resp, nil
+		}
+		loc, err := resp.Location()
+		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("stream load: redirect without location: %w", err)
+		}
+		url = loc.String()
+	}
+	return nil, errors.New("stream load: too many redirects")
 }
