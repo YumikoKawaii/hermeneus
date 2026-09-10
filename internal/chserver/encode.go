@@ -136,12 +136,42 @@ func newAppender(name, chType string) (appender, error) {
 // StarRocks returns ARRAY / MAP columns over the MySQL wire as JSON text
 // (["a","b"], {"k":"v"}). parseStrArray / parseStrMap decode that text; an empty
 // cell is treated as an empty container.
+func escapeControlChars(raw []byte) []byte {
+	needs := false
+	for _, b := range raw {
+		if b < 0x20 {
+			needs = true
+			break
+		}
+	}
+	if !needs {
+		return raw
+	}
+	out := make([]byte, 0, len(raw)+16)
+	const hex = "0123456789abcdef"
+	for _, b := range raw {
+		switch {
+		case b == '\n':
+			out = append(out, '\\', 'n')
+		case b == '\t':
+			out = append(out, '\\', 't')
+		case b == '\r':
+			out = append(out, '\\', 'r')
+		case b < 0x20:
+			out = append(out, '\\', 'u', '0', '0', hex[b>>4], hex[b&0xf])
+		default:
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
 func parseStrArray(raw []byte) ([]string, error) {
 	if len(raw) == 0 {
 		return nil, nil
 	}
 	var vals []string
-	if err := json.Unmarshal(raw, &vals); err != nil {
+	if err := json.Unmarshal(escapeControlChars(raw), &vals); err != nil {
 		return nil, fmt.Errorf("array cell %q: %w", raw, err)
 	}
 	return vals, nil
@@ -152,7 +182,7 @@ func parseStrMap(raw []byte) (map[string]string, error) {
 		return map[string]string{}, nil
 	}
 	m := map[string]string{}
-	if err := json.Unmarshal(raw, &m); err != nil {
+	if err := json.Unmarshal(escapeControlChars(raw), &m); err != nil {
 		return nil, fmt.Errorf("map cell %q: %w", raw, err)
 	}
 	return m, nil
@@ -163,7 +193,7 @@ func parseMapArray(raw []byte) ([]map[string]string, error) {
 		return nil, nil
 	}
 	var ms []map[string]string
-	if err := json.Unmarshal(raw, &ms); err != nil {
+	if err := json.Unmarshal(escapeControlChars(raw), &ms); err != nil {
 		return nil, fmt.Errorf("array-of-map cell %q: %w", raw, err)
 	}
 	return ms, nil
