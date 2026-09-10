@@ -292,6 +292,9 @@ var (
 	toStartOfIntervalRe = regexp.MustCompile(`toStartOfInterval\(\s*([^,]+?)\s*,\s*INTERVAL\s+(\d+)\s+second\s*\)`)
 	// GLOBAL IN -> IN
 	globalInRe     = regexp.MustCompile(`\bGLOBAL\s+IN\b`)
+	// Empty IN () (Coroot binds an empty array) -> IN (NULL); StarRocks rejects
+	// IN () syntactically, and x IN (NULL) is never true, matching CH semantics.
+	emptyInRe = regexp.MustCompile(`\bIN\s*\(\s*\)`)
 	// StarRocks requires every derived table to have an alias. Coroot's log
 	// window query wraps a subquery as `min(Timestamp) FROM (SELECT ... )` with
 	// no alias; give it one.
@@ -355,6 +358,7 @@ func rewriteConstructs(sql string) string {
 	sql = rewriteCall(sql, "match", matchToRegexp)
 	sql = rewriteCall(sql, "startsWith", startsWithToStartsWith)
 	sql = inArrayRe.ReplaceAllString(sql, "IN ($1)")
+	sql = emptyInRe.ReplaceAllString(sql, "IN (NULL)")
 	sql = globalInRe.ReplaceAllString(sql, "IN")
 	sql = minDerivedRe.ReplaceAllString(sql, "$1) t")
 	sql = traceIdsDerivedRe.ReplaceAllString(sql, "$1) t")
