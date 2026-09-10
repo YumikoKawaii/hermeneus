@@ -271,6 +271,8 @@ var (
 	// groupArray has been rewritten to array_agg).
 	traceIdsDerivedRe = regexp.MustCompile(`(array_agg\(distinct TraceId\)\s+FROM\s+\(SELECT\s+TraceId\s+FROM\b[\s\S]*?LIMIT\s+\d+)\)`)
 	toDateTime64Re = regexp.MustCompile(`toDateTime64\(\s*'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})(?:\.(\d+))?'\s*,\s*\d+\s*\)`)
+	inArrayOpenRe  = regexp.MustCompile(`\bIN\s*\(\s*\[`)
+	inArrayCloseRe = regexp.MustCompile(`\]\s*\)`)
 )
 
 func toDateTime64ToLiteral(m []string) string {
@@ -298,6 +300,10 @@ func rewriteConstructs(sql string) string {
 	sql = rewriteCall(sql, "empty", emptyToArrayLength)
 	sql = rewriteCall(sql, "toInt64", toInt64ToCast)
 	sql = rewriteCall(sql, "roundDown", roundDownToCase)
+	sql = rewriteCall(sql, "match", matchToRegexp)
+	sql = rewriteCall(sql, "startsWith", startsWithToStartsWith)
+	sql = inArrayOpenRe.ReplaceAllString(sql, "IN (")
+	sql = inArrayCloseRe.ReplaceAllString(sql, ")")
 	sql = globalInRe.ReplaceAllString(sql, "IN")
 	sql = minDerivedRe.ReplaceAllString(sql, "$1) t")
 	sql = traceIdsDerivedRe.ReplaceAllString(sql, "$1) t")
@@ -430,6 +436,20 @@ func multiIfToCase(args []string) (string, bool) {
 }
 
 // intDivToFloor turns a, b into floor((a)/(b)).
+func matchToRegexp(args []string) (string, bool) {
+	if len(args) != 2 {
+		return "", false
+	}
+	return fmt.Sprintf("regexp(%s, %s)", args[0], args[1]), true
+}
+
+func startsWithToStartsWith(args []string) (string, bool) {
+	if len(args) != 2 {
+		return "", false
+	}
+	return fmt.Sprintf("starts_with(%s, %s)", args[0], args[1]), true
+}
+
 func intDivToFloor(args []string) (string, bool) {
 	if len(args) != 2 {
 		return "", false
