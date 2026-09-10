@@ -104,6 +104,20 @@ var registry = []registered{
 		}},
 	},
 	{
+		match: func(n string) bool {
+			return strings.HasPrefix(n, "SELECT ServiceName, Timestamp, multiIf(SeverityNumber=0, 0, intDiv(SeverityNumber, 4)+1), Body, TraceId, ResourceAttributes, LogAttributes FROM otel_logs")
+		},
+		shape: ResultShape{Columns: []Column{
+			{Name: "ServiceName", CHType: "String"},
+			{Name: "Timestamp", CHType: "DateTime64(9)"},
+			{Name: "severity", CHType: "Int64"},
+			{Name: "Body", CHType: "String"},
+			{Name: "TraceId", CHType: "String"},
+			{Name: "ResourceAttributes", CHType: "Map(String,String)"},
+			{Name: "LogAttributes", CHType: "Map(String,String)"},
+		}},
+	},
+	{
 		// GetServicesFromTraces (traces.go Q1):
 		//   SELECT DISTINCT ServiceName FROM otel_traces_service_name WHERE LastSeen >= @from
 		match: func(n string) bool {
@@ -247,10 +261,25 @@ var (
 	// toStartOfInterval(<ts>, INTERVAL n second) -> from_unixtime(floor(unix_timestamp(<ts>)/n)*n)
 	toStartOfIntervalRe = regexp.MustCompile(`toStartOfInterval\(\s*([^,]+?)\s*,\s*INTERVAL\s+(\d+)\s+second\s*\)`)
 	// GLOBAL IN -> IN
-	globalInRe = regexp.MustCompile(`\bGLOBAL\s+IN\b`)
+	globalInRe     = regexp.MustCompile(`\bGLOBAL\s+IN\b`)
+	toDateTime64Re = regexp.MustCompile(`toDateTime64\(\s*'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})(?:\.(\d+))?'\s*,\s*\d+\s*\)`)
 )
 
+func toDateTime64ToLiteral(m []string) string {
+	frac := m[2]
+	if len(frac) > 6 {
+		frac = frac[:6]
+	}
+	if frac == "" {
+		return "'" + m[1] + "'"
+	}
+	return "'" + m[1] + "." + frac + "'"
+}
+
 func rewriteConstructs(sql string) string {
+	sql = toDateTime64Re.ReplaceAllStringFunc(sql, func(x string) string {
+		return toDateTime64ToLiteral(toDateTime64Re.FindStringSubmatch(x))
+	})
 	sql = toStartOfIntervalRe.ReplaceAllString(sql, "from_unixtime(floor(unix_timestamp($1)/$2)*$2)")
 	sql = rewriteCall(sql, "multiIf", multiIfToCase)
 	sql = rewriteCall(sql, "intDiv", intDivToFloor)
