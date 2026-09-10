@@ -262,6 +262,14 @@ var (
 	toStartOfIntervalRe = regexp.MustCompile(`toStartOfInterval\(\s*([^,]+?)\s*,\s*INTERVAL\s+(\d+)\s+second\s*\)`)
 	// GLOBAL IN -> IN
 	globalInRe     = regexp.MustCompile(`\bGLOBAL\s+IN\b`)
+	// StarRocks requires every derived table to have an alias. Coroot's log
+	// window query wraps a subquery as `min(Timestamp) FROM (SELECT ... )` with
+	// no alias; give it one.
+	minDerivedRe = regexp.MustCompile(`(min\(Timestamp\)\s+FROM\s+\(SELECT\b[\s\S]*?LIMIT\s+\d+)\)`)
+	// getTraces (traces.go) wraps `array_agg(distinct TraceId) FROM (SELECT
+	// TraceId FROM ... ORDER BY Timestamp DESC LIMIT n)` with no alias (after
+	// groupArray has been rewritten to array_agg).
+	traceIdsDerivedRe = regexp.MustCompile(`(array_agg\(distinct TraceId\)\s+FROM\s+\(SELECT\s+TraceId\s+FROM\b[\s\S]*?LIMIT\s+\d+)\)`)
 	toDateTime64Re = regexp.MustCompile(`toDateTime64\(\s*'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})(?:\.(\d+))?'\s*,\s*\d+\s*\)`)
 )
 
@@ -291,6 +299,8 @@ func rewriteConstructs(sql string) string {
 	sql = rewriteCall(sql, "toInt64", toInt64ToCast)
 	sql = rewriteCall(sql, "roundDown", roundDownToCase)
 	sql = globalInRe.ReplaceAllString(sql, "IN")
+	sql = minDerivedRe.ReplaceAllString(sql, "$1) t")
+	sql = traceIdsDerivedRe.ReplaceAllString(sql, "$1) t")
 	return sql
 }
 
