@@ -70,6 +70,20 @@ func Registry() []Probe {
 				return []proto.InputColumn{{Name: "metadata_modification_time", Data: new(proto.ColDateTime)}}
 			},
 		},
+		{
+			Match: func(sql string) bool {
+				return contains(sql, "system.disks")
+			},
+			Response: func(string) []proto.InputColumn {
+				return []proto.InputColumn{
+					{Name: "name", Data: new(proto.ColStr)},
+					{Name: "path", Data: new(proto.ColStr)},
+					{Name: "free_space", Data: new(proto.ColUInt64)},
+					{Name: "total_space", Data: new(proto.ColUInt64)},
+					{Name: "type", Data: new(proto.ColStr)},
+				}
+			},
+		},
 	}
 }
 
