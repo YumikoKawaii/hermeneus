@@ -1,47 +1,64 @@
-# Hermeneus
-
-A ClickHouse-native-protocol server that translates Coroot's telemetry queries to
-StarRocks. Coroot connects to Hermeneus believing it is ClickHouse; Hermeneus
-speaks StarRocks (MySQL wire + Stream Load) on the other side.
-
-Goal: run **upstream Coroot unmodified, forever**. No fork. Coroot upgrades that
-do not change query shapes require zero action here.
+<div align="center">
 
 ```
-  coroot ──ClickHouse native TCP (ch-go)──▶ Hermeneus ──MySQL / Stream Load──▶ StarRocks
+    ██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███╗   ██╗███████╗██╗   ██╗███████╗
+    ██║  ██║██╔════╝██╔══██╗████╗ ████║██╔════╝████╗  ██║██╔════╝██║   ██║██╔════╝
+    ███████║█████╗  ██████╔╝██╔████╔██║█████╗  ██╔██╗ ██║█████╗  ██║   ██║███████╗
+    ██╔══██║██╔══╝  ██╔══██╗██║╚██╔╝██║██╔══╝  ██║╚██╗██║██╔══╝  ██║   ██║╚════██║
+    ██║  ██║███████╗██║  ██║██║ ╚═╝ ██║███████╗██║ ╚████║███████╗╚██████╔╝███████║
+    ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚═╝  ╚═══╝╚══════╝ ╚═════╝ ╚══════╝
 ```
 
-## Why a shim and not a fork
+### *The Interpreter Between Two Tongues*
 
-A Go fork of Coroot's `clickhouse/` package is smaller work, but must be
-re-applied on every upstream release. Hermeneus decouples from Coroot's binary
-entirely — it is coupled only to Coroot's *query behavior*, which changes rarely.
+---
 
-## Coupling surface (what an upgrade could break)
+**A ClickHouse-Native Wire Server That Speaks StarRocks**
 
-Hermeneus keeps working across Coroot upgrades UNLESS a new version:
+[![Author](https://img.shields.io/badge/Author-Yumiko%20Sturluson-ff69b4?style=for-the-badge)](https://github.com/yumikokawaii)
+[![License](https://img.shields.io/badge/License-Private-9370DB?style=for-the-badge)]()
+[![Go](https://img.shields.io/badge/Go-1.27-00ADD8?style=for-the-badge&logo=go&logoColor=white)]()
+[![Protocol](https://img.shields.io/badge/ClickHouse%20Native-FFCC01?style=for-the-badge&logo=clickhouse&logoColor=black)]()
+[![Backend](https://img.shields.io/badge/StarRocks-1E88E5?style=for-the-badge)]()
 
-- adds a new `system.*` probe (today: `system.zookeeper`, `system.tables`)
-- changes a data-query shape (new function, new column)
-- bumps `ch-go` in a protocol-breaking way
+</div>
 
-Translation is AST-level, so an unrecognised query fails LOUD (logged + CH
-exception) rather than silently returning wrong data — that is the upgrade tripwire.
+---
 
-## Reused, not reimplemented
+## About
 
-The ClickHouse wire is NOT hand-rolled. `github.com/ClickHouse/ch-go/proto`
-exposes both directions — `ClientHello.Decode`, `ServerHello.EncodeAware`,
-`Query.DecodeAware`, `Block.EncodeBlock` / `DecodeRawBlock`, `ClientData.DecodeAware`,
-LZ4 — so Hermeneus stays framing-compatible with whatever ch-go Coroot ships.
+> *"Hermes carried the words of the gods to mortals, and neither side ever knew he had changed the language."*
 
-## Layout
+Welcome to **hermeneus**!
 
-- `cmd/hermeneus`        — entrypoint, config load, listen loop
-- `internal/chserver`    — ClickHouse native-protocol server (handshake, packet loop, block encode)
-- `internal/translate`   — CH SQL AST → StarRocks SQL rewriter (the ~15 real queries)
-- `internal/starrocks`   — StarRocks client: MySQL query path + Stream Load ingest path
-- `internal/system`      — canned responses for `system.*` probes and DDL passthrough
-- `internal/config`      — YAML config
+[Coroot](https://github.com/coroot/coroot) stores its logs, traces, and profiles in ClickHouse and speaks nothing
+else. `hermeneus` sits where ClickHouse would be, accepts the native TCP protocol, and quietly carries every query to
+**StarRocks** instead. Coroot runs **upstream, unmodified, forever** — no fork, no patch to re-apply on each release.
 
-See `docs/DESIGN.md`.
+```
+  coroot ──ClickHouse native TCP──▶ hermeneus ──MySQL wire / Stream Load / Kafka──▶ StarRocks
+```
+
+Translation is deliberate, not clever. Only the ~15 query shapes Coroot actually emits are recognised. Anything else
+fails **loud** — logged and returned as a ClickHouse exception — so a Coroot upgrade that changes a query trips the
+wire instead of silently returning wrong data.
+
+## Author
+
+<div align="center">
+
+**~ Yumiko Sturluson ~**
+
+*Software Engineer*
+
+*コードよ、わがまほうとなれ*
+
+</div>
+
+---
+
+<div align="center">
+
+*~ Built with mass amounts of coffee ~*
+
+</div>
