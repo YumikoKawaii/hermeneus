@@ -66,6 +66,17 @@ func (s *Server) handleInsert(cc *connCtx, body string) error {
 	}
 
 	batch := sink.Batch{Table: table, Columns: names}
+	peerIdx := -1
+	if table == "otel_traces" {
+		for i, n := range names {
+			if n == "SpanAttributes" {
+				peerIdx = i
+			}
+		}
+		if peerIdx >= 0 {
+			batch.Columns = append(batch.Columns, "NetSockPeerAddr")
+		}
+	}
 	for {
 		code, err := s.readCode(cc.r)
 		if err != nil {
@@ -88,7 +99,7 @@ func (s *Server) handleInsert(cc *connCtx, body string) error {
 		if block.End() {
 			break
 		}
-		if err := appendBlock(&batch, results); err != nil {
+		if err := appendBlock(&batch, results, peerIdx); err != nil {
 			return err
 		}
 	}
@@ -110,19 +121,26 @@ func (s *Server) decodeBlock(cc *connCtx, target proto.Result) (proto.Block, err
 	return block, err
 }
 
-func appendBlock(b *sink.Batch, cols proto.Results) error {
+func appendBlock(b *sink.Batch, cols proto.Results, peerIdx int) error {
 	if len(cols) == 0 {
 		return errors.New("empty block")
 	}
 	rows := cols[0].Data.Rows()
 	for i := 0; i < rows; i++ {
-		row := make([]any, len(cols))
+		row := make([]any, len(cols), len(b.Columns))
 		for j, c := range cols {
 			v, err := cellValue(c.Data, i)
 			if err != nil {
 				return fmt.Errorf("column %s: %w", c.Name, err)
 			}
 			row[j] = v
+		}
+		if peerIdx >= 0 {
+			addr := ""
+			if m, ok := row[peerIdx].(map[string]string); ok {
+				addr = m["net.sock.peer.addr"]
+			}
+			row = append(row, addr)
 		}
 		b.Rows = append(b.Rows, row)
 	}

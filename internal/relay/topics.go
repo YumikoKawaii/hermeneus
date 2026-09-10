@@ -65,6 +65,7 @@ type TraceMessage struct {
 	LinksSpanId        []string            `json:"Links.SpanId"`
 	LinksTraceState    []string            `json:"Links.TraceState"`
 	LinksAttributes    []map[string]string `json:"Links.Attributes"`
+	NetSockPeerAddr    string              `json:"NetSockPeerAddr"`
 }
 
 type ProfilingStackMessage struct {

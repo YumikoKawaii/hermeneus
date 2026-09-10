@@ -27,17 +27,14 @@ services:
         condition: service_healthy
     volumes:
       - ./migrations:/migrations:ro
-      - ./scripts/seed.sql:/seed.sql:ro
     entrypoint: ["/bin/sh", "-ec"]
     command:
       - |
         mysql -h starrocks -P 9030 -u root -e "CREATE DATABASE IF NOT EXISTS hermeneus"
-        for f in /migrations/0001_logs.sql /migrations/0002_traces.sql /migrations/0003_profiles.sql; do
+        for f in /migrations/0001_logs.sql /migrations/0002_traces.sql /migrations/0003_profiles.sql /migrations/0004_views.sql; do
           echo "applying $$f"
           grep -v '^[[:space:]]*--' "$$f" | mysql -h starrocks -P 9030 -u root hermeneus
         done
-        echo "seeding"
-        grep -v '^[[:space:]]*--' /seed.sql | mysql -h starrocks -P 9030 -u root hermeneus
         echo "done"
 
   hermeneus:
