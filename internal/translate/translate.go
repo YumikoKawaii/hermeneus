@@ -191,7 +191,7 @@ var registry = []registered{
 	{
 		// querySpans / getTraceSpans (traces.go Q7, Q8): identical 14-col shape.
 		// Events.* are CH Nested parallel-array columns; SR schema exposes them as
-		// Array columns (mapping owned out-of-band, SQL passes through textually).
+		// backtick-quoted Array columns; eventsColRe quotes the refs in rewriteConstructs.
 		match: func(n string) bool {
 			return strings.HasPrefix(n, "SELECT Timestamp, TraceId, SpanId, ParentSpanId, SpanName, ServiceName, Duration, StatusCode, StatusMessage, ResourceAttributes, SpanAttributes, Events.Timestamp, Events.Name, Events.Attributes FROM otel_traces")
 		},
@@ -291,7 +291,7 @@ var (
 	// toStartOfInterval(<ts>, INTERVAL n second) -> from_unixtime(floor(unix_timestamp(<ts>)/n)*n)
 	toStartOfIntervalRe = regexp.MustCompile(`toStartOfInterval\(\s*([^,]+?)\s*,\s*INTERVAL\s+(\d+)\s+second\s*\)`)
 	// GLOBAL IN -> IN
-	globalInRe     = regexp.MustCompile(`\bGLOBAL\s+IN\b`)
+	globalInRe = regexp.MustCompile(`\bGLOBAL\s+IN\b`)
 	// Empty IN () (Coroot binds an empty array) -> IN (NULL); StarRocks rejects
 	// IN () syntactically, and x IN (NULL) is never true, matching CH semantics.
 	emptyInRe = regexp.MustCompile(`\bIN\s*\(\s*\)`)
@@ -303,9 +303,42 @@ var (
 	// TraceId FROM ... ORDER BY Timestamp DESC LIMIT n)` with no alias (after
 	// groupArray has been rewritten to array_agg).
 	traceIdsDerivedRe = regexp.MustCompile(`(array_agg\(distinct TraceId\)\s+FROM\s+\(SELECT\s+TraceId\s+FROM\b[\s\S]*?LIMIT\s+\d+)\)`)
-	toDateTime64Re = regexp.MustCompile(`toDateTime64\(\s*'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})(?:\.(\d+))?'\s*,\s*\d+\s*\)`)
-	inArrayRe = regexp.MustCompile(`\bIN\s*\(\s*\[([^\[\]]*)\]\s*\)`)
+	toDateTime64Re    = regexp.MustCompile(`toDateTime64\(\s*'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})(?:\.(\d+))?'\s*,\s*\d+\s*\)`)
+	inArrayRe         = regexp.MustCompile(`\bIN\s*\(\s*\[([^\[\]]*)\]\s*\)`)
+	inBareArrayRe     = regexp.MustCompile(`\bIN\s*\[([^\[\]]*)\]`)
+	tupleInRe         = regexp.MustCompile(`\(([^()]+?),\s*([^()]+?)\)\s+IN\s+\(((?:\s*\([^()]*\)\s*,?)+)\)`)
+	tupleElemRe       = regexp.MustCompile(`\(([^()]*)\)`)
+	eventsColRe       = regexp.MustCompile(`\bEvents\.(Timestamp|Name|Attributes)\b`)
+	maxEndPlusOneRe   = regexp.MustCompile(`max\(End\)\s*\+\s*1`)
 )
+
+func tupleInToOr(m string) string {
+	sub := tupleInRe.FindStringSubmatch(m)
+	a, b := sub[1], sub[2]
+	var parts []string
+	for _, e := range tupleElemRe.FindAllStringSubmatch(sub[3], -1) {
+		vals := splitArgs(e[1])
+		if len(vals) != 2 {
+			return m
+		}
+		parts = append(parts, fmt.Sprintf("(%s = %s AND %s = %s)", a, vals[0], b, vals[1]))
+	}
+	if len(parts) == 0 {
+		return "FALSE"
+	}
+	return "(" + strings.Join(parts, " OR ") + ")"
+}
+
+func hasTokenToRegexp(args []string) (string, bool) {
+	if len(args) != 2 {
+		return "", false
+	}
+	tok := strings.TrimSpace(args[1])
+	if len(tok) < 2 || tok[0] != '\'' || tok[len(tok)-1] != '\'' {
+		return "", false
+	}
+	return fmt.Sprintf(`regexp(%s, '\\b%s\\b')`, args[0], tok[1:len(tok)-1]), true
+}
 
 func toDateTime64ToLiteral(m []string) string {
 	frac := m[2]
@@ -325,7 +358,7 @@ func rewriteStripSettings(sql string) string {
 }
 
 var (
-	logAttrNamesSelectRe = regexp.MustCompile(`^SELECT arrayJoin\(arrayConcat\(mapKeys\(LogAttributes\), mapKeys\(ResourceAttributes\)\)\) AS k FROM otel_logs`)
+	logAttrNamesSelectRe  = regexp.MustCompile(`^SELECT arrayJoin\(arrayConcat\(mapKeys\(LogAttributes\), mapKeys\(ResourceAttributes\)\)\) AS k FROM otel_logs`)
 	logAttrValuesSelectRe = regexp.MustCompile(`^SELECT DISTINCT arrayJoin\((\[LogAttributes\[[^\]]*\], ResourceAttributes\[[^\]]*\]\])\) FROM otel_logs`)
 )
 
@@ -357,7 +390,14 @@ func rewriteConstructs(sql string) string {
 	sql = rewriteCall(sql, "roundDown", roundDownToCase)
 	sql = rewriteCall(sql, "match", matchToRegexp)
 	sql = rewriteCall(sql, "startsWith", startsWithToStartsWith)
+	sql = rewriteCall(sql, "hasToken", hasTokenToRegexp)
+	sql = eventsColRe.ReplaceAllString(sql, "`Events.$1`")
+	sql = maxEndPlusOneRe.ReplaceAllString(sql, "date_add(max(End), INTERVAL 1 SECOND)")
+	sql = strings.ReplaceAll(sql, "HAVING value > 0", "HAVING sum(Value) > 0")
+	sql = strings.ReplaceAll(sql, "ORDER BY value DESC", "ORDER BY sum(Value) DESC")
+	sql = tupleInRe.ReplaceAllStringFunc(sql, tupleInToOr)
 	sql = inArrayRe.ReplaceAllString(sql, "IN ($1)")
+	sql = inBareArrayRe.ReplaceAllString(sql, "IN ($1)")
 	sql = emptyInRe.ReplaceAllString(sql, "IN (NULL)")
 	sql = globalInRe.ReplaceAllString(sql, "IN")
 	sql = minDerivedRe.ReplaceAllString(sql, "$1) t")

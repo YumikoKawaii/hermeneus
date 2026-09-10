@@ -53,6 +53,55 @@ func Registry() []Probe {
 			},
 		},
 		{
+			Match: func(sql string) bool {
+				return contains(sql, "system.tables") && contains(sql, "engine = 'Distributed'")
+			},
+			Response: func(string) []proto.InputColumn {
+				return []proto.InputColumn{{Name: "cluster_name", Data: new(proto.ColStr)}}
+			},
+		},
+		{
+			Match: func(sql string) bool {
+				return contains(sql, "system.clusters")
+			},
+			Response: func(string) []proto.InputColumn {
+				return []proto.InputColumn{
+					{Name: "cluster", Data: new(proto.ColStr)},
+					{Name: "shard_num", Data: new(proto.ColUInt32)},
+					{Name: "replica_num", Data: new(proto.ColUInt32)},
+					{Name: "host_name", Data: new(proto.ColStr)},
+					{Name: "port", Data: new(proto.ColUInt16)},
+				}
+			},
+		},
+		{
+			Match: func(sql string) bool {
+				return contains(sql, "system.parts") && contains(sql, "partition_id")
+			},
+			Response: func(string) []proto.InputColumn {
+				return []proto.InputColumn{
+					{Name: "database", Data: new(proto.ColStr)},
+					{Name: "table", Data: new(proto.ColStr)},
+					{Name: "partition_id", Data: new(proto.ColStr)},
+				}
+			},
+		},
+		{
+			Match: func(sql string) bool {
+				return contains(sql, "system.parts")
+			},
+			Response: func(string) []proto.InputColumn {
+				return []proto.InputColumn{
+					{Name: "database", Data: new(proto.ColStr)},
+					{Name: "table", Data: new(proto.ColStr)},
+					{Name: "bytes_on_disk", Data: new(proto.ColUInt64)},
+					{Name: "data_uncompressed_bytes", Data: new(proto.ColUInt64)},
+					{Name: "ttl_expr", Data: new(proto.ColStr)},
+					{Name: "data_since", Data: new(proto.ColDateTime)},
+				}
+			},
+		},
+		{
 			// currentDatabase() -> configured db name.
 			Match: func(sql string) bool {
 				return contains(sql, "currentdatabase()")
