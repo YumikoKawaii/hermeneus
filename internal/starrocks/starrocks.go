@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,7 +25,16 @@ type Client struct {
 }
 
 func New(cfg config.StarRocks) (*Client, error) {
-	c := &Client{cfg: cfg, http: &http.Client{Timeout: 5 * time.Minute}}
+	c := &Client{cfg: cfg, http: &http.Client{
+		Timeout: 5 * time.Minute,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return errors.New("stream load: too many redirects")
+			}
+			req.SetBasicAuth(cfg.StreamLoadUser, cfg.StreamLoadPass)
+			return nil
+		},
+	}}
 	if cfg.MySQLDSN == "" {
 		return c, nil
 	}
@@ -88,7 +98,6 @@ func (c *Client) Write(ctx context.Context, b sink.Batch) error {
 	req.Header.Set("strip_outer_array", "true")
 	req.Header.Set("jsonpaths", "["+strings.Join(paths, ",")+"]")
 	req.Header.Set("columns", strings.Join(cols, ","))
-	req.Header.Set("Expect", "100-continue")
 
 	resp, err := c.http.Do(req)
 	if err != nil {
