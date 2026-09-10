@@ -68,8 +68,9 @@ func Classify(sql string) Kind {
 // concrete SQL (values already substituted). Matching is done on a normalised
 // form (whitespace-collapsed) so binding differences don't defeat the match.
 type registered struct {
-	match func(norm string) bool
-	shape ResultShape
+	match   func(norm string) bool
+	shape   ResultShape
+	rewrite func(norm string) string
 }
 
 var wsRe = regexp.MustCompile(`\s+`)
@@ -116,6 +117,35 @@ var registry = []registered{
 			{Name: "ResourceAttributes", CHType: "Map(String,String)"},
 			{Name: "LogAttributes", CHType: "Map(String,String)"},
 		}},
+	},
+	{
+		// log attribute-name list (logs.go getFilters, name==""):
+		//   SELECT arrayJoin(arrayConcat(mapKeys(LogAttributes), mapKeys(ResourceAttributes))) AS k
+		//   FROM otel_logs WHERE ... GROUP BY 1 HAVING NOT match(k, '..') ORDER BY count(1) DESC, 1 LIMIT 1000 SETTINGS ..
+		match: func(n string) bool {
+			return strings.HasPrefix(n, "SELECT arrayJoin(arrayConcat(mapKeys(LogAttributes), mapKeys(ResourceAttributes))) AS k FROM otel_logs")
+		},
+		shape:   ResultShape{Columns: []Column{{Name: "k", CHType: "String"}}},
+		rewrite: rewriteLogAttrNames,
+	},
+	{
+		// log severity list (logs.go getFilters, name=="Severity"):
+		//   SELECT DISTINCT multiIf(SeverityNumber=0, 0, intDiv(SeverityNumber, 4)+1) FROM otel_logs WHERE ..
+		match: func(n string) bool {
+			return strings.HasPrefix(n, "SELECT DISTINCT multiIf(SeverityNumber=0, 0, intDiv(SeverityNumber, 4)+1) FROM otel_logs")
+		},
+		shape:   ResultShape{Columns: []Column{{Name: "severity", CHType: "Int64"}}},
+		rewrite: rewriteStripSettings,
+	},
+	{
+		// log attribute-value list (logs.go getFilters, default branch):
+		//   SELECT DISTINCT arrayJoin([LogAttributes[@attr], ResourceAttributes[@attr]]) FROM otel_logs WHERE ..
+		match: func(n string) bool {
+			return strings.HasPrefix(n, "SELECT DISTINCT arrayJoin([LogAttributes[") &&
+				strings.Contains(n, "], ResourceAttributes[") && strings.Contains(n, "]]) FROM otel_logs")
+		},
+		shape:   ResultShape{Columns: []Column{{Name: "v", CHType: "String"}}},
+		rewrite: rewriteLogAttrValues,
 	},
 	{
 		// GetServicesFromTraces (traces.go Q1):
@@ -271,8 +301,7 @@ var (
 	// groupArray has been rewritten to array_agg).
 	traceIdsDerivedRe = regexp.MustCompile(`(array_agg\(distinct TraceId\)\s+FROM\s+\(SELECT\s+TraceId\s+FROM\b[\s\S]*?LIMIT\s+\d+)\)`)
 	toDateTime64Re = regexp.MustCompile(`toDateTime64\(\s*'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})(?:\.(\d+))?'\s*,\s*\d+\s*\)`)
-	inArrayOpenRe  = regexp.MustCompile(`\bIN\s*\(\s*\[`)
-	inArrayCloseRe = regexp.MustCompile(`\]\s*\)`)
+	inArrayRe = regexp.MustCompile(`\bIN\s*\(\s*\[([^\[\]]*)\]\s*\)`)
 )
 
 func toDateTime64ToLiteral(m []string) string {
@@ -284,6 +313,29 @@ func toDateTime64ToLiteral(m []string) string {
 		return "'" + m[1] + "'"
 	}
 	return "'" + m[1] + "." + frac + "'"
+}
+
+var settingsTailRe = regexp.MustCompile(`\s+SETTINGS\s+.*$`)
+
+func rewriteStripSettings(sql string) string {
+	return rewriteConstructs(settingsTailRe.ReplaceAllString(sql, ""))
+}
+
+var (
+	logAttrNamesSelectRe = regexp.MustCompile(`^SELECT arrayJoin\(arrayConcat\(mapKeys\(LogAttributes\), mapKeys\(ResourceAttributes\)\)\) AS k FROM otel_logs`)
+	logAttrValuesSelectRe = regexp.MustCompile(`^SELECT DISTINCT arrayJoin\((\[LogAttributes\[[^\]]*\], ResourceAttributes\[[^\]]*\]\])\) FROM otel_logs`)
+)
+
+func rewriteLogAttrNames(sql string) string {
+	sql = logAttrNamesSelectRe.ReplaceAllString(sql,
+		"SELECT k FROM otel_logs, unnest(array_concat(map_keys(LogAttributes), map_keys(ResourceAttributes))) AS t(k)")
+	return rewriteStripSettings(sql)
+}
+
+func rewriteLogAttrValues(sql string) string {
+	sql = logAttrValuesSelectRe.ReplaceAllString(sql,
+		"SELECT DISTINCT k FROM otel_logs, unnest($1) AS t(k)")
+	return rewriteStripSettings(sql)
 }
 
 func rewriteConstructs(sql string) string {
@@ -302,8 +354,7 @@ func rewriteConstructs(sql string) string {
 	sql = rewriteCall(sql, "roundDown", roundDownToCase)
 	sql = rewriteCall(sql, "match", matchToRegexp)
 	sql = rewriteCall(sql, "startsWith", startsWithToStartsWith)
-	sql = inArrayOpenRe.ReplaceAllString(sql, "IN (")
-	sql = inArrayCloseRe.ReplaceAllString(sql, ")")
+	sql = inArrayRe.ReplaceAllString(sql, "IN ($1)")
 	sql = globalInRe.ReplaceAllString(sql, "IN")
 	sql = minDerivedRe.ReplaceAllString(sql, "$1) t")
 	sql = traceIdsDerivedRe.ReplaceAllString(sql, "$1) t")
@@ -503,6 +554,9 @@ func Translate(sql string) (Translated, error) {
 	n := normalise(sql)
 	for _, r := range registry {
 		if r.match(n) {
+			if r.rewrite != nil {
+				return Translated{SQL: r.rewrite(n), Shape: r.shape}, nil
+			}
 			return Translated{SQL: rewriteConstructs(n), Shape: r.shape}, nil
 		}
 	}
