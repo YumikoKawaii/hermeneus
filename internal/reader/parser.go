@@ -5,10 +5,6 @@ import (
 	"strings"
 )
 
-// parser is a recursive-descent parser that accepts ONLY the ClickHouse SELECT
-// grammar Coroot emits. Any construct outside that vocabulary is a parse error —
-// fail-loud tripwire #1. Params are already client-bound, so literals are
-// concrete by the time we parse.
 type parser struct {
 	toks []token
 	pos  int
@@ -161,8 +157,8 @@ func (p *parser) Statement() (*Statement, error) {
 	return s, nil
 }
 
-// consumeSettingsTail swallows everything after SETTINGS to EOF as raw text; the
-// builder drops it (StarRocks has no SETTINGS). Kept only so parsing succeeds.
+// consumeSettingsTail swallows everything after SETTINGS to EOF as raw text.
+// The Clickhouse-specific SETTINGS clause carries no logical meaning
 func (p *parser) consumeSettingsTail() string {
 	var parts []string
 	for p.cur().kind != tEOF {

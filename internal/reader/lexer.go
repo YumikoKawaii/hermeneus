@@ -23,14 +23,30 @@ type token struct {
 }
 
 var keywords = map[string]bool{
-	"SELECT": true, "DISTINCT": true, "FROM": true, "WHERE": true,
-	"GROUP": true, "BY": true, "HAVING": true, "ORDER": true, "LIMIT": true,
-	"SETTINGS": true, "WITH": true, "AS": true, "JOIN": true, "USING": true,
-	"ON": true, "AND": true, "OR": true, "NOT": true, "IN": true,
-	"GLOBAL": true, "INTERVAL": true, "ASC": true, "DESC": true, "NULL": true,
-	// CASE/WHEN/THEN/ELSE/END are intentionally NOT reserved: Coroot uses `End`
-	// as a column name (max(End)+1). They are recognised by ident text in the
-	// CASE parser instead, so they never shadow a column.
+	"SELECT":   true,
+	"DISTINCT": true,
+	"FROM":     true,
+	"WHERE":    true,
+	"GROUP":    true,
+	"BY":       true,
+	"HAVING":   true,
+	"ORDER":    true,
+	"LIMIT":    true,
+	"SETTINGS": true,
+	"WITH":     true,
+	"AS":       true,
+	"JOIN":     true,
+	"USING":    true,
+	"ON":       true,
+	"AND":      true,
+	"OR":       true,
+	"NOT":      true,
+	"IN":       true,
+	"GLOBAL":   true,
+	"INTERVAL": true,
+	"ASC":      true,
+	"DESC":     true,
+	"NULL":     true,
 }
 
 type lexer struct {
@@ -54,8 +70,6 @@ func isIdentPart(b byte) bool {
 
 func isDigit(b byte) bool { return b >= '0' && b <= '9' }
 
-// tokenize turns CH SQL into a flat token stream. Coroot binds @named params
-// client-side, so bodies arrive as concrete SQL: no @param tokens survive.
 func (l *lexer) tokenize() ([]token, error) {
 	var out []token
 	for {
@@ -103,9 +117,6 @@ func (l *lexer) skipSpace() {
 	}
 }
 
-// lexString reads a single-quoted CH string literal, keeping the surrounding
-// quotes and preserving escape sequences verbatim (\' and \\). The raw text is
-// carried through to StarRocks unchanged.
 func (l *lexer) lexString() (string, error) {
 	start := l.pos
 	l.pos++ // opening '
@@ -145,9 +156,6 @@ func (l *lexer) lexIdent() string {
 	return l.src[start:l.pos]
 }
 
-// lexPunct reads one operator/punctuation token. Multi-char operators the Coroot
-// grammar uses (>=, <=, !=, <>) are matched greedily; everything else is a single
-// byte. An unrecognised byte is a lex error (fail-loud).
 func (l *lexer) lexPunct() (string, error) {
 	two := ""
 	if l.pos+1 < len(l.src) {
