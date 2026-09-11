@@ -8,6 +8,7 @@ import (
 
 type Config struct {
 	ListenAddr string    `yaml:"listenAddr"`
+	Sink       string    `yaml:"sink"`
 	Server     CHServer  `yaml:"server"`
 	StarRocks  StarRocks `yaml:"starrocks"`
 	Kafka      Kafka     `yaml:"kafka"`
@@ -41,6 +42,7 @@ type Kafka struct {
 func Default() Config {
 	return Config{
 		ListenAddr: ":9000",
+		Sink:       "starrocks",
 		Server: CHServer{
 			ServerName:      "Hermeneus",
 			VersionMajor:    24,
@@ -71,6 +73,9 @@ func FromEnv() Config {
 	c := Default()
 	if v := os.Getenv("HERMENEUS_LISTEN_ADDR"); v != "" {
 		c.ListenAddr = v
+	}
+	if v := os.Getenv("HERMENEUS_SINK"); v != "" {
+		c.Sink = v
 	}
 	if v := os.Getenv("HERMENEUS_DATABASE"); v != "" {
 		c.Server.Database = v

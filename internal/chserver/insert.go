@@ -24,6 +24,7 @@ func (s *Server) handleInsert(cc *connCtx, body string) error {
 	}
 	results := make(proto.Results, len(names))
 	header := make([]proto.InputColumn, len(names))
+	cols := make([]proto.Column, len(names))
 	for i, n := range names {
 		f, ok := schema[n]
 		if !ok {
@@ -33,15 +34,13 @@ func (s *Server) handleInsert(cc *connCtx, body string) error {
 		col := f()
 		results[i] = proto.ResultColumn{Name: n, Data: col}
 		header[i] = proto.InputColumn{Name: n, Data: col}
+		cols[i] = col
 	}
 
 	if err := s.writeBlock(cc, header, false); err != nil {
 		return err
 	}
 
-	// Sink wiring is removed for now: decode the incoming blocks to keep the
-	// wire in sync, then discard them and ack. Ingestion is silently a no-op
-	// until a sink is wired back in.
 	for {
 		code, err := s.readCode(cc.r)
 		if err != nil {
@@ -63,6 +62,15 @@ func (s *Server) handleInsert(cc *connCtx, body string) error {
 		}
 		if block.End() {
 			break
+		}
+		records, err := blockRecords(names, cols)
+		if err != nil {
+			log.Printf("insert into %s: %v", table, err)
+			return s.sendException(cc.conn, cc.buf, cc.ver, "hermeneus: "+err.Error())
+		}
+		if err := s.w.Write(table, records); err != nil {
+			log.Printf("insert into %s: write: %v", table, err)
+			return s.sendException(cc.conn, cc.buf, cc.ver, "hermeneus: write failed")
 		}
 	}
 	return s.sendEndOfStream(cc)
