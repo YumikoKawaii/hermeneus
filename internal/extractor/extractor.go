@@ -520,6 +520,11 @@ func (p *parser) inRHS(lhs Expression, global, not bool) (Expression, error) {
 	if err := p.eatPunct(")"); err != nil {
 		return nil, err
 	}
+	if len(list) == 1 {
+		if arr, ok := list[0].(ArrayExpression); ok {
+			list = arr.Elems
+		}
+	}
 	return InExpression{Global: global, Not: not, Lhs: lhs, List: list}, nil
 }
 
