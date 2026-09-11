@@ -43,6 +43,44 @@ Translation is deliberate, not clever. Only the ~15 query shapes Coroot actually
 fails **loud** — logged and returned as a ClickHouse exception — so a Coroot upgrade that changes a query trips the
 wire instead of silently returning wrong data.
 
+## Architecture
+
+The wire server accepts the ClickHouse native protocol and splits Coroot's traffic in two:
+
+- **Reads** — a `SELECT` is parsed by `internal/extractor` into an engine-neutral logical IR, then rendered to
+  StarRocks SQL by a **Reader** adapter and run over the MySQL wire.
+- **Writes** — an `INSERT` header is parsed for its table and columns; the native data blocks are decoded row by row
+  into records and handed to a **Writer** adapter.
+
+```
+  extractor ──logical IR──▶ Reader.Read(IR)      ──▶ StarRocks SQL
+  extractor ──records─────▶ Writer.Write(target) ──▶ sink
+```
+
+Both seams are interfaces (`internal/adapter`), so backends are swappable:
+
+| Adapter     | Reader | Writer                            |
+|-------------|:------:|-----------------------------------|
+| `starrocks` |   ✔    | `stream_load` (HTTP) or `insert` (MySQL wire) |
+| `kafka`     |   —    | one JSON message per record, per-table topic  |
+
+## Configuration
+
+All configuration is via environment variables:
+
+| Variable                     | Default        | Purpose                                   |
+|------------------------------|----------------|-------------------------------------------|
+| `HERMENEUS_LISTEN_ADDR`      | `:9000`        | CH-native listen address                  |
+| `HERMENEUS_DATABASE`         | `default`      | Logical database name                     |
+| `HERMENEUS_SINK`             | `starrocks`    | Insert sink: `starrocks` or `kafka`       |
+| `HERMENEUS_SR_HOST`          | —              | StarRocks host                            |
+| `HERMENEUS_SR_QUERY_PORT`    | `9030`         | MySQL-protocol query port                 |
+| `HERMENEUS_SR_HTTP_PORT`     | `8030`         | Stream Load HTTP port                     |
+| `HERMENEUS_SR_USER`          | `root`         | StarRocks user                            |
+| `HERMENEUS_SR_PASSWORD`      | —              | StarRocks password                        |
+| `HERMENEUS_SR_WRITE_MODE`    | `stream_load`  | StarRocks write mode: `stream_load` or `insert` |
+| `HERMENEUS_KAFKA_BROKERS`    | —              | Comma-separated broker list (kafka sink)  |
+
 ## Author
 
 <div align="center">
