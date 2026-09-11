@@ -1,19 +1,31 @@
-package translate
+package writer
 
 import (
 	"fmt"
 	"strings"
+
+	"github.com/yumikokawaii/hermeneus/internal/reader"
 )
 
-// build prints a parsed CH SELECT as StarRocks SQL, applying every CH→SR
+// UnnestRef is a StarRocks lateral UNNEST column. It is not produced by the
+// reader; callers synthesise it (turning a CH arrayJoin(<arr>) into UNNEST) and
+// the writer renders it. It satisfies reader.FromItem so it can sit in the AST.
+type UnnestRef struct {
+	Arg      reader.Expr
+	ColAlias string
+}
+
+func (UnnestRef) IsFrom() {}
+
+// Build prints a parsed CH SELECT as StarRocks SQL, applying every CH→SR
 // construct mapping structurally over the AST. Any function or construct it
-// cannot map returns an error — fail-loud tripwire #2 (the real IR seam).
+// cannot map returns an error — fail-loud tripwire (the real IR seam).
 type builder struct {
 	sb  strings.Builder
 	err error
 }
 
-func buildStarRocks(s *selectStmt) (string, error) {
+func Build(s *reader.SelectStmt) (string, error) {
 	b := &builder{}
 	b.selectStmt(s)
 	if b.err != nil {
@@ -30,89 +42,89 @@ func (b *builder) fail(format string, a ...any) {
 
 func (b *builder) w(s string) { b.sb.WriteString(s) }
 
-func (b *builder) selectStmt(s *selectStmt) {
-	if len(s.with) > 0 {
+func (b *builder) selectStmt(s *reader.SelectStmt) {
+	if len(s.With) > 0 {
 		b.w("WITH ")
-		for i, c := range s.with {
+		for i, c := range s.With {
 			if i > 0 {
 				b.w(", ")
 			}
-			b.w(c.name)
+			b.w(c.Name)
 			b.w(" AS (")
-			b.selectStmt(c.query)
+			b.selectStmt(c.Query)
 			b.w(")")
 		}
 		b.w(" ")
 	}
 	b.w("SELECT ")
-	if s.distinct {
+	if s.Distinct {
 		b.w("DISTINCT ")
 	}
-	for i, c := range s.cols {
+	for i, c := range s.Cols {
 		if i > 0 {
 			b.w(", ")
 		}
-		b.expr(c.expr)
-		if c.alias != "" {
+		b.expr(c.Expr)
+		if c.Alias != "" {
 			b.w(" AS ")
-			b.w(c.alias)
+			b.w(c.Alias)
 		}
 	}
-	if s.from != nil {
+	if s.From != nil {
 		b.w(" FROM ")
-		b.fromItem(s.from)
+		b.fromItem(s.From)
 	}
-	if s.where != nil {
+	if s.Where != nil {
 		b.w(" WHERE ")
-		b.expr(s.where)
+		b.expr(s.Where)
 	}
-	if len(s.groupBy) > 0 {
+	if len(s.GroupBy) > 0 {
 		b.w(" GROUP BY ")
-		for i, e := range s.groupBy {
+		for i, e := range s.GroupBy {
 			if i > 0 {
 				b.w(", ")
 			}
 			b.expr(e)
 		}
 	}
-	if s.having != nil {
+	if s.Having != nil {
 		b.w(" HAVING ")
-		b.expr(s.having)
+		b.expr(s.Having)
 	}
-	if len(s.orderBy) > 0 {
+	if len(s.OrderBy) > 0 {
 		b.w(" ORDER BY ")
-		for i, it := range s.orderBy {
+		for i, it := range s.OrderBy {
 			if i > 0 {
 				b.w(", ")
 			}
-			b.expr(it.expr)
-			if it.desc {
+			b.expr(it.Expr)
+			if it.Desc {
 				b.w(" DESC")
 			}
 		}
 	}
-	if s.limit != "" {
+	if s.Limit != "" {
 		b.w(" LIMIT ")
-		b.w(s.limit)
+		b.w(s.Limit)
 	}
 	// SETTINGS is intentionally dropped — StarRocks has no equivalent.
 }
 
 var derivedAliasSeq int
 
-func (b *builder) fromItem(f fromItem) {
+func (b *builder) fromItem(f reader.FromItem) {
 	switch v := f.(type) {
-	case tableRef:
-		b.w(v.name)
-		if v.alias != "" {
+	case reader.TableRef:
+		b.w(v.Name)
+		if v.Alias != "" {
 			b.w(" ")
-			b.w(v.alias)
+			b.w(v.Alias)
 		}
-	case subqueryRef:
+	case reader.SubqueryRef:
 		b.w("(")
-		b.selectStmt(v.query)
+		b.selectStmt(v.Query)
 		b.w(")")
-		alias := v.alias
+		alias := v.Alias
 		if alias == "" {
 			// StarRocks requires every derived table to have an alias.
 			derivedAliasSeq++
@@ -120,152 +132,152 @@ func (b *builder) fromItem(f fromItem) {
 		}
 		b.w(" ")
 		b.w(alias)
-	case joinRef:
-		b.fromItem(v.left)
-		if v.comma {
+	case reader.JoinRef:
+		b.fromItem(v.Left)
+		if v.Comma {
 			b.w(", ")
-			b.fromItem(v.right)
+			b.fromItem(v.Right)
 			return
 		}
 		b.w(" JOIN ")
-		b.fromItem(v.right)
+		b.fromItem(v.Right)
 		b.w(" USING(")
-		b.w(strings.Join(v.using, ", "))
+		b.w(strings.Join(v.Using, ", "))
 		b.w(")")
-	case unnestRef:
+	case UnnestRef:
 		// StarRocks lateral: unnest(<arr>) AS t(<col>)
 		b.w("unnest(")
-		b.expr(v.arg)
+		b.expr(v.Arg)
 		b.w(") AS t(")
-		b.w(v.colAlias)
+		b.w(v.ColAlias)
 		b.w(")")
 	default:
 		b.fail("unknown from item %T", f)
 	}
 }
 
-func (b *builder) expr(e expr) {
+func (b *builder) expr(e reader.Expr) {
 	switch v := e.(type) {
-	case identExpr:
-		b.w(v.name)
-	case memberExpr:
+	case reader.IdentExpr:
+		b.w(v.Name)
+	case reader.MemberExpr:
 		// CH Nested parallel-array column Events.X -> SR backtick Array column.
-		if v.base == "Events" && (v.field == "Timestamp" || v.field == "Name" || v.field == "Attributes") {
-			b.w("`Events." + v.field + "`")
+		if v.Base == "Events" && (v.Field == "Timestamp" || v.Field == "Name" || v.Field == "Attributes") {
+			b.w("`Events." + v.Field + "`")
 			return
 		}
-		b.w(v.base + "." + v.field)
-	case numberExpr:
-		b.w(v.text)
-	case stringExpr:
-		b.w(v.text)
-	case nullExpr:
+		b.w(v.Base + "." + v.Field)
+	case reader.NumberExpr:
+		b.w(v.Text)
+	case reader.StringExpr:
+		b.w(v.Text)
+	case reader.NullExpr:
 		b.w("NULL")
-	case starExpr:
+	case reader.StarExpr:
 		b.w("*")
-	case arrayExpr:
+	case reader.ArrayExpr:
 		b.w("[")
-		for i, el := range v.elems {
+		for i, el := range v.Elems {
 			if i > 0 {
 				b.w(", ")
 			}
 			b.expr(el)
 		}
 		b.w("]")
-	case tupleExpr:
+	case reader.TupleExpr:
 		b.w("(")
-		for i, el := range v.elems {
+		for i, el := range v.Elems {
 			if i > 0 {
 				b.w(", ")
 			}
 			b.expr(el)
 		}
 		b.w(")")
-	case indexExpr:
-		b.expr(v.base)
+	case reader.IndexExpr:
+		b.expr(v.Base)
 		b.w("[")
-		b.expr(v.index)
+		b.expr(v.Index)
 		b.w("]")
-	case binaryExpr:
+	case reader.BinaryExpr:
 		b.binary(v)
-	case notExpr:
+	case reader.NotExpr:
 		b.w("NOT ")
-		b.expr(v.x)
-	case caseExpr:
+		b.expr(v.X)
+	case reader.CaseExpr:
 		b.caseExpr(v)
-	case inExpr:
+	case reader.InExpr:
 		b.inExpr(v)
-	case callExpr:
+	case reader.CallExpr:
 		b.call(v)
-	case intervalExpr:
+	case reader.IntervalExpr:
 		b.fail("bare INTERVAL not expected outside toStartOfInterval")
 	default:
 		b.fail("unknown expr %T", e)
 	}
 }
 
-func (b *builder) binary(v binaryExpr) {
+func (b *builder) binary(v reader.BinaryExpr) {
 	// max(End)+1 -> date_add(max(End), INTERVAL 1 SECOND)
-	if v.op == "+" {
-		if c, ok := v.left.(callExpr); ok && c.fn == "max" &&
-			isNumber(v.right, "1") && len(c.args) == 1 {
-			if id, ok := c.args[0].(identExpr); ok && id.name == "End" {
+	if v.Op == "+" {
+		if c, ok := v.Left.(reader.CallExpr); ok && c.Fn == "max" &&
+			isNumber(v.Right, "1") && len(c.Args) == 1 {
+			if id, ok := c.Args[0].(reader.IdentExpr); ok && id.Name == "End" {
 				b.w("date_add(max(End), INTERVAL 1 SECOND)")
 				return
 			}
 		}
 	}
-	if v.op == "AND" || v.op == "OR" {
+	if v.Op == "AND" || v.Op == "OR" {
 		b.w("(")
-		b.expr(v.left)
-		b.w(" " + v.op + " ")
-		b.expr(v.right)
+		b.expr(v.Left)
+		b.w(" " + v.Op + " ")
+		b.expr(v.Right)
 		b.w(")")
 		return
 	}
-	b.expr(v.left)
-	b.w(" " + v.op + " ")
-	b.expr(v.right)
+	b.expr(v.Left)
+	b.w(" " + v.Op + " ")
+	b.expr(v.Right)
 }
 
-func (b *builder) caseExpr(v caseExpr) {
+func (b *builder) caseExpr(v reader.CaseExpr) {
 	b.w("CASE")
-	for _, w := range v.whens {
+	for _, w := range v.Whens {
 		b.w(" WHEN ")
-		b.expr(w.cond)
+		b.expr(w.Cond)
 		b.w(" THEN ")
-		b.expr(w.result)
+		b.expr(w.Result)
 	}
-	if v.els != nil {
+	if v.Els != nil {
 		b.w(" ELSE ")
-		b.expr(v.els)
+		b.expr(v.Els)
 	}
 	b.w(" END")
 }
 
-func (b *builder) inExpr(v inExpr) {
+func (b *builder) inExpr(v reader.InExpr) {
 	// tuple-IN is rewritten to an OR chain, so it replaces the whole "lhs IN …".
-	if v.tuples != nil {
-		b.tupleIn(v.lhs, v.tuples, v.not)
+	if v.Tuples != nil {
+		b.tupleIn(v.Lhs, v.Tuples, v.Not)
 		return
 	}
-	b.expr(v.lhs)
-	if v.not {
+	b.expr(v.Lhs)
+	if v.Not {
 		b.w(" NOT")
 	}
 	// GLOBAL IN -> IN
 	b.w(" IN ")
 	switch {
-	case v.sub != nil:
+	case v.Sub != nil:
 		b.w("(")
-		b.selectStmt(v.sub)
+		b.selectStmt(v.Sub)
 		b.w(")")
-	case len(v.list) == 0:
+	case len(v.List) == 0:
 		// Empty IN () -> IN (NULL): never matches, mirrors CH semantics.
 		b.w("(NULL)")
 	default:
 		b.w("(")
-		for i, e := range v.list {
+		for i, e := range v.List {
 			if i > 0 {
 				b.w(", ")
 			}
@@ -277,13 +289,13 @@ func (b *builder) inExpr(v inExpr) {
 
 // tupleIn rewrites (a,b) IN ((x,y),(z,w)) into an OR of equality pairs, since
 // StarRocks does not support row-tuple IN. NOT (a,b) IN (...) negates the group.
-func (b *builder) tupleIn(lhs expr, tuples [][]expr, not bool) {
-	tup, ok := lhs.(tupleExpr)
-	if !ok || len(tup.elems) != 2 {
+func (b *builder) tupleIn(lhs reader.Expr, tuples [][]reader.Expr, not bool) {
+	tup, ok := lhs.(reader.TupleExpr)
+	if !ok || len(tup.Elems) != 2 {
 		b.fail("tuple IN lhs must be a 2-tuple")
 		return
 	}
-	a, c := tup.elems[0], tup.elems[1]
+	a, c := tup.Elems[0], tup.Elems[1]
 	if len(tuples) == 0 {
 		b.w("FALSE")
 		return
@@ -313,80 +325,80 @@ func (b *builder) tupleIn(lhs expr, tuples [][]expr, not bool) {
 	b.w(")")
 }
 
-func (b *builder) call(c callExpr) {
-	fn := c.fn
-	if fn == "intDiv" && len(c.args) == 2 {
+func (b *builder) call(c reader.CallExpr) {
+	fn := c.Fn
+	if fn == "intDiv" && len(c.Args) == 2 {
 		b.w("floor((")
-		b.expr(c.args[0])
+		b.expr(c.Args[0])
 		b.w(")/(")
-		b.expr(c.args[1])
+		b.expr(c.Args[1])
 		b.w("))")
 		return
 	}
 	if mapped, ok := simpleFnMap[fn]; ok {
 		b.w(mapped)
 		b.w("(")
-		if c.distinct {
+		if c.Distinct {
 			b.w("distinct ")
 		}
-		b.args(c.args)
+		b.args(c.Args)
 		b.w(")")
 		return
 	}
 	switch fn {
 	case "multiIf":
-		b.multiIf(c.args)
+		b.multiIf(c.Args)
 	case "countIf":
 		b.needArgs(c, 1, func() {
 			b.w("count(if(")
-			b.expr(c.args[0])
+			b.expr(c.Args[0])
 			b.w(",1,null))")
 		})
 	case "has":
 		b.needArgs(c, 2, func() {
 			b.w("array_contains(")
-			b.expr(c.args[0])
+			b.expr(c.Args[0])
 			b.w(", ")
-			b.expr(c.args[1])
+			b.expr(c.Args[1])
 			b.w(")")
 		})
 	case "empty":
 		b.needArgs(c, 1, func() {
 			b.w("array_length(")
-			b.expr(c.args[0])
+			b.expr(c.Args[0])
 			b.w(") = 0")
 		})
 	case "toInt64":
 		b.needArgs(c, 1, func() {
 			b.w("cast(")
-			b.expr(c.args[0])
+			b.expr(c.Args[0])
 			b.w(" as bigint)")
 		})
 	case "match", "hasToken":
-		b.regexpFn(fn, c.args)
+		b.regexpFn(fn, c.Args)
 	case "startsWith":
 		b.needArgs(c, 2, func() {
 			b.w("starts_with(")
-			b.expr(c.args[0])
+			b.expr(c.Args[0])
 			b.w(", ")
-			b.expr(c.args[1])
+			b.expr(c.Args[1])
 			b.w(")")
 		})
 	case "toStartOfInterval":
-		b.toStartOfInterval(c.args)
+		b.toStartOfInterval(c.Args)
 	case "toDateTime64":
-		b.toDateTime64(c.args)
+		b.toDateTime64(c.Args)
 	case "roundDown":
-		b.roundDown(c.args)
+		b.roundDown(c.Args)
 	case "arrayConcat":
-		b.plainFn("array_concat", c.args)
+		b.plainFn("array_concat", c.Args)
 	case "mapKeys":
-		b.plainFn("map_keys", c.args)
+		b.plainFn("map_keys", c.Args)
 	case "count", "sum", "min", "max", "floor", "if", "arrayJoin":
 		// count/sum/min/max/floor/if pass through; arrayJoin handled at shape
 		// level (log attr queries rewrite it to UNNEST) but a bare arrayJoin in
 		// other positions passes through as-is for StarRocks lateral use.
-		b.plainFn(fn, c.args)
+		b.plainFn(fn, c.Args)
 	default:
 		b.fail("unmapped function %q", fn)
 	}
@@ -397,14 +409,14 @@ var simpleFnMap = map[string]string{
 	"any":        "any_value",
 }
 
-func (b *builder) plainFn(name string, args []expr) {
+func (b *builder) plainFn(name string, args []reader.Expr) {
 	b.w(name)
 	b.w("(")
 	b.args(args)
 	b.w(")")
 }
 
-func (b *builder) args(args []expr) {
+func (b *builder) args(args []reader.Expr) {
 	for i, a := range args {
 		if i > 0 {
 			b.w(", ")
@@ -413,15 +425,15 @@ func (b *builder) args(args []expr) {
 	}
 }
 
-func (b *builder) needArgs(c callExpr, n int, fn func()) {
-	if len(c.args) != n {
-		b.fail("%s expects %d args, got %d", c.fn, n, len(c.args))
+func (b *builder) needArgs(c reader.CallExpr, n int, fn func()) {
+	if len(c.Args) != n {
+		b.fail("%s expects %d args, got %d", c.Fn, n, len(c.Args))
 		return
 	}
 	fn()
 }
 
-func (b *builder) multiIf(args []expr) {
+func (b *builder) multiIf(args []reader.Expr) {
 	if len(args) < 3 || len(args)%2 == 0 {
 		b.fail("multiIf needs an odd arg count >= 3")
 		return
@@ -439,7 +451,7 @@ func (b *builder) multiIf(args []expr) {
 	b.w(" END")
 }
 
-func (b *builder) regexpFn(fn string, args []expr) {
+func (b *builder) regexpFn(fn string, args []reader.Expr) {
 	if len(args) != 2 {
 		b.fail("%s expects 2 args", fn)
 		return
@@ -453,43 +465,43 @@ func (b *builder) regexpFn(fn string, args []expr) {
 		return
 	}
 	// hasToken(col, 'tok') -> regexp(col, '\btok\b')
-	s, ok := args[1].(stringExpr)
-	if !ok || len(s.text) < 2 {
+	s, ok := args[1].(reader.StringExpr)
+	if !ok || len(s.Text) < 2 {
 		b.fail("hasToken token must be a string literal")
 		return
 	}
-	tok := s.text[1 : len(s.text)-1]
+	tok := s.Text[1 : len(s.Text)-1]
 	b.w("regexp(")
 	b.expr(args[0])
 	b.w(fmt.Sprintf(`, '\\b%s\\b')`, tok))
 }
 
-func (b *builder) toStartOfInterval(args []expr) {
+func (b *builder) toStartOfInterval(args []reader.Expr) {
 	if len(args) != 2 {
 		b.fail("toStartOfInterval expects 2 args")
 		return
 	}
-	iv, ok := args[1].(intervalExpr)
-	if !ok || !strings.EqualFold(iv.unit, "second") {
+	iv, ok := args[1].(reader.IntervalExpr)
+	if !ok || !strings.EqualFold(iv.Unit, "second") {
 		b.fail("toStartOfInterval second arg must be INTERVAL n second")
 		return
 	}
 	b.w("from_unixtime(floor(unix_timestamp(")
 	b.expr(args[0])
-	b.w(fmt.Sprintf(")/%s)*%s)", iv.n, iv.n))
+	b.w(fmt.Sprintf(")/%s)*%s)", iv.N, iv.N))
 }
 
-func (b *builder) toDateTime64(args []expr) {
+func (b *builder) toDateTime64(args []reader.Expr) {
 	if len(args) < 1 {
 		b.fail("toDateTime64 expects a literal")
 		return
 	}
-	s, ok := args[0].(stringExpr)
+	s, ok := args[0].(reader.StringExpr)
 	if !ok {
 		b.fail("toDateTime64 first arg must be a string literal")
 		return
 	}
-	inner := s.text[1 : len(s.text)-1]
+	inner := s.Text[1 : len(s.Text)-1]
 	if dot := strings.IndexByte(inner, '.'); dot >= 0 {
 		frac := inner[dot+1:]
 		if len(frac) > 6 {
@@ -501,18 +513,18 @@ func (b *builder) toDateTime64(args []expr) {
 }
 
 // roundDown(x, [b0..bn]) -> CASE ladder snapping x down to the largest bound<=x.
-func (b *builder) roundDown(args []expr) {
+func (b *builder) roundDown(args []reader.Expr) {
 	if len(args) != 2 {
 		b.fail("roundDown expects 2 args")
 		return
 	}
-	arr, ok := args[1].(arrayExpr)
-	if !ok || len(arr.elems) == 0 {
+	arr, ok := args[1].(reader.ArrayExpr)
+	if !ok || len(arr.Elems) == 0 {
 		b.fail("roundDown second arg must be a non-empty array literal")
 		return
 	}
-	bounds := make([]string, len(arr.elems))
-	for i, el := range arr.elems {
+	bounds := make([]string, len(arr.Elems))
+	for i, el := range arr.Elems {
 		bounds[i] = exprText(el)
 		if bounds[i] == "" {
 			b.fail("roundDown bound must be a literal")
@@ -527,14 +539,14 @@ func (b *builder) roundDown(args []expr) {
 	b.w(fmt.Sprintf(" ELSE %s END", bounds[0]))
 }
 
-func isNumber(e expr, want string) bool {
-	n, ok := e.(numberExpr)
-	return ok && n.text == want
+func isNumber(e reader.Expr, want string) bool {
+	n, ok := e.(reader.NumberExpr)
+	return ok && n.Text == want
 }
 
 // exprText renders a simple expr back to text for literal-bound contexts
 // (roundDown bounds, Duration/1000000). Returns "" for anything non-trivial.
-func exprText(e expr) string {
+func exprText(e reader.Expr) string {
 	sub := &builder{}
 	sub.expr(e)
 	if sub.err != nil {

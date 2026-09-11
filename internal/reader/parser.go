@@ -1,4 +1,4 @@
-package translate
+package reader
 
 import (
 	"fmt"
@@ -14,13 +14,13 @@ type parser struct {
 	pos  int
 }
 
-func parseSelect(sql string) (*selectStmt, error) {
+func Parse(sql string) (*SelectStmt, error) {
 	toks, err := newLexer(sql).tokenize()
 	if err != nil {
 		return nil, err
 	}
 	p := &parser{toks: toks}
-	stmt, err := p.selectStmt()
+	stmt, err := p.SelectStmt()
 	if err != nil {
 		return nil, err
 	}
@@ -30,7 +30,7 @@ func parseSelect(sql string) (*selectStmt, error) {
 	return stmt, nil
 }
 
-func (p *parser) cur() token  { return p.toks[p.pos] }
+func (p *parser) cur() token { return p.toks[p.pos] }
 func (p *parser) peek() token {
 	if p.pos+1 < len(p.toks) {
 		return p.toks[p.pos+1]
@@ -76,37 +76,38 @@ func (p *parser) eatPunct(s string) error {
 	return nil
 }
 
-// selectStmt := [WITH cte {, cte}] SELECT [DISTINCT] cols FROM from
-//               [WHERE expr] [GROUP BY exprs] [HAVING expr]
-//               [ORDER BY items] [LIMIT n] [SETTINGS tail]
-func (p *parser) selectStmt() (*selectStmt, error) {
-	s := &selectStmt{}
+// SelectStmt := [WITH CTE {, CTE}] SELECT [DISTINCT] cols FROM from
+//
+//	[WHERE expr] [GROUP BY exprs] [HAVING expr]
+//	[ORDER BY items] [LIMIT n] [SETTINGS tail]
+func (p *parser) SelectStmt() (*SelectStmt, error) {
+	s := &SelectStmt{}
 	if p.isKw("WITH") {
 		ctes, err := p.withClause()
 		if err != nil {
 			return nil, err
 		}
-		s.with = ctes
+		s.With = ctes
 	}
 	if err := p.eatKw("SELECT"); err != nil {
 		return nil, err
 	}
 	if p.isKw("DISTINCT") {
 		p.advance()
-		s.distinct = true
+		s.Distinct = true
 	}
 	cols, err := p.selectCols()
 	if err != nil {
 		return nil, err
 	}
-	s.cols = cols
+	s.Cols = cols
 	if p.isKw("FROM") {
 		p.advance()
 		from, err := p.fromClause()
 		if err != nil {
 			return nil, err
 		}
-		s.from = from
+		s.From = from
 	}
 	if p.isKw("WHERE") {
 		p.advance()
@@ -114,7 +115,7 @@ func (p *parser) selectStmt() (*selectStmt, error) {
 		if err != nil {
 			return nil, err
 		}
-		s.where = e
+		s.Where = e
 	}
 	if p.isKw("GROUP") {
 		p.advance()
@@ -125,7 +126,7 @@ func (p *parser) selectStmt() (*selectStmt, error) {
 		if err != nil {
 			return nil, err
 		}
-		s.groupBy = exprs
+		s.GroupBy = exprs
 	}
 	if p.isKw("HAVING") {
 		p.advance()
@@ -133,7 +134,7 @@ func (p *parser) selectStmt() (*selectStmt, error) {
 		if err != nil {
 			return nil, err
 		}
-		s.having = e
+		s.Having = e
 	}
 	if p.isKw("ORDER") {
 		p.advance()
@@ -144,18 +145,18 @@ func (p *parser) selectStmt() (*selectStmt, error) {
 		if err != nil {
 			return nil, err
 		}
-		s.orderBy = items
+		s.OrderBy = items
 	}
 	if p.isKw("LIMIT") {
 		p.advance()
 		if p.cur().kind != tNumber {
 			return nil, p.errf("expected LIMIT number, got %q", p.cur().text)
 		}
-		s.limit = p.advance().text
+		s.Limit = p.advance().text
 	}
 	if p.isKw("SETTINGS") {
 		p.advance()
-		s.settings = p.consumeSettingsTail()
+		s.Settings = p.consumeSettingsTail()
 	}
 	return s, nil
 }
@@ -170,11 +171,11 @@ func (p *parser) consumeSettingsTail() string {
 	return strings.Join(parts, " ")
 }
 
-func (p *parser) withClause() ([]cte, error) {
+func (p *parser) withClause() ([]CTE, error) {
 	if err := p.eatKw("WITH"); err != nil {
 		return nil, err
 	}
-	var out []cte
+	var out []CTE
 	for {
 		if p.cur().kind != tIdent {
 			return nil, p.errf("expected CTE name, got %q", p.cur().text)
@@ -186,14 +187,14 @@ func (p *parser) withClause() ([]cte, error) {
 		if err := p.eatPunct("("); err != nil {
 			return nil, err
 		}
-		q, err := p.selectStmt()
+		q, err := p.SelectStmt()
 		if err != nil {
 			return nil, err
 		}
 		if err := p.eatPunct(")"); err != nil {
 			return nil, err
 		}
-		out = append(out, cte{name: name, query: q})
+		out = append(out, CTE{Name: name, Query: q})
 		if p.isPunct(",") {
 			p.advance()
 			continue
@@ -202,20 +203,20 @@ func (p *parser) withClause() ([]cte, error) {
 	}
 }
 
-func (p *parser) selectCols() ([]selectCol, error) {
-	var out []selectCol
+func (p *parser) selectCols() ([]SelectCol, error) {
+	var out []SelectCol
 	for {
 		e, err := p.expr()
 		if err != nil {
 			return nil, err
 		}
-		col := selectCol{expr: e}
+		col := SelectCol{Expr: e}
 		if p.isKw("AS") {
 			p.advance()
 			if p.cur().kind != tIdent {
 				return nil, p.errf("expected alias, got %q", p.cur().text)
 			}
-			col.alias = p.advance().text
+			col.Alias = p.advance().text
 		}
 		out = append(out, col)
 		if p.isPunct(",") {
@@ -227,7 +228,7 @@ func (p *parser) selectCols() ([]selectCol, error) {
 }
 
 // fromClause := fromPrimary { (JOIN fromPrimary USING(...) | , fromPrimary) }
-func (p *parser) fromClause() (fromItem, error) {
+func (p *parser) fromClause() (FromItem, error) {
 	left, err := p.fromPrimary()
 	if err != nil {
 		return nil, err
@@ -261,24 +262,24 @@ func (p *parser) fromClause() (fromItem, error) {
 			if err := p.eatPunct(")"); err != nil {
 				return nil, err
 			}
-			left = joinRef{left: left, right: right, using: cols}
+			left = JoinRef{Left: left, Right: right, Using: cols}
 		case p.isPunct(","):
 			p.advance()
 			right, err := p.fromPrimary()
 			if err != nil {
 				return nil, err
 			}
-			left = joinRef{left: left, right: right, comma: true}
+			left = JoinRef{Left: left, Right: right, Comma: true}
 		default:
 			return left, nil
 		}
 	}
 }
 
-func (p *parser) fromPrimary() (fromItem, error) {
+func (p *parser) fromPrimary() (FromItem, error) {
 	if p.isPunct("(") {
 		p.advance()
-		q, err := p.selectStmt()
+		q, err := p.SelectStmt()
 		if err != nil {
 			return nil, err
 		}
@@ -286,14 +287,14 @@ func (p *parser) fromPrimary() (fromItem, error) {
 			return nil, err
 		}
 		alias := p.optAlias()
-		return subqueryRef{query: q, alias: alias}, nil
+		return SubqueryRef{Query: q, Alias: alias}, nil
 	}
 	if p.cur().kind != tIdent {
 		return nil, p.errf("expected table name, got %q", p.cur().text)
 	}
 	name := p.advance().text
 	alias := p.optAlias()
-	return tableRef{name: name, alias: alias}, nil
+	return TableRef{Name: name, Alias: alias}, nil
 }
 
 // optAlias reads an optional table alias (bare ident or AS ident).
@@ -311,19 +312,19 @@ func (p *parser) optAlias() string {
 	return ""
 }
 
-func (p *parser) orderItems() ([]orderItem, error) {
-	var out []orderItem
+func (p *parser) orderItems() ([]OrderItem, error) {
+	var out []OrderItem
 	for {
 		e, err := p.expr()
 		if err != nil {
 			return nil, err
 		}
-		it := orderItem{expr: e}
+		it := OrderItem{Expr: e}
 		if p.isKw("ASC") {
 			p.advance()
 		} else if p.isKw("DESC") {
 			p.advance()
-			it.desc = true
+			it.Desc = true
 		}
 		out = append(out, it)
 		if p.isPunct(",") {
@@ -334,8 +335,8 @@ func (p *parser) orderItems() ([]orderItem, error) {
 	}
 }
 
-func (p *parser) exprList() ([]expr, error) {
-	var out []expr
+func (p *parser) exprList() ([]Expr, error) {
+	var out []Expr
 	for {
 		e, err := p.expr()
 		if err != nil {
@@ -351,18 +352,19 @@ func (p *parser) exprList() ([]expr, error) {
 }
 
 // Expression grammar (lowest to highest precedence):
-//   expr    := orExpr
-//   orExpr  := andExpr { OR andExpr }
-//   andExpr := notExpr { AND notExpr }
-//   notExpr := NOT notExpr | cmpExpr
-//   cmpExpr := addExpr [ (= != < <= > >=) addExpr | [GLOBAL] [NOT] IN inRHS ]
-//   addExpr := mulExpr { (+|-) mulExpr }
-//   mulExpr := unary { (*|/|%) unary }
-//   unary   := postfix
-//   postfix := primary { [ index ] | . field }
-func (p *parser) expr() (expr, error) { return p.orExpr() }
+//
+//	expr    := orExpr
+//	orExpr  := andExpr { OR andExpr }
+//	andExpr := NotExpr { AND NotExpr }
+//	NotExpr := NOT NotExpr | cmpExpr
+//	cmpExpr := addExpr [ (= != < <= > >=) addExpr | [GLOBAL] [NOT] IN inRHS ]
+//	addExpr := mulExpr { (+|-) mulExpr }
+//	mulExpr := unary { (*|/|%) unary }
+//	unary   := postfix
+//	postfix := primary { [ index ] | . field }
+func (p *parser) expr() (Expr, error) { return p.orExpr() }
 
-func (p *parser) orExpr() (expr, error) {
+func (p *parser) orExpr() (Expr, error) {
 	left, err := p.andExpr()
 	if err != nil {
 		return nil, err
@@ -373,12 +375,12 @@ func (p *parser) orExpr() (expr, error) {
 		if err != nil {
 			return nil, err
 		}
-		left = binaryExpr{op: "OR", left: left, right: right}
+		left = BinaryExpr{Op: "OR", Left: left, Right: right}
 	}
 	return left, nil
 }
 
-func (p *parser) andExpr() (expr, error) {
+func (p *parser) andExpr() (Expr, error) {
 	left, err := p.notExpr()
 	if err != nil {
 		return nil, err
@@ -389,24 +391,24 @@ func (p *parser) andExpr() (expr, error) {
 		if err != nil {
 			return nil, err
 		}
-		left = binaryExpr{op: "AND", left: left, right: right}
+		left = BinaryExpr{Op: "AND", Left: left, Right: right}
 	}
 	return left, nil
 }
 
-func (p *parser) notExpr() (expr, error) {
+func (p *parser) notExpr() (Expr, error) {
 	if p.isKw("NOT") {
 		p.advance()
 		x, err := p.notExpr()
 		if err != nil {
 			return nil, err
 		}
-		return notExpr{x: x}, nil
+		return NotExpr{X: x}, nil
 	}
 	return p.cmpExpr()
 }
 
-func (p *parser) cmpExpr() (expr, error) {
+func (p *parser) cmpExpr() (Expr, error) {
 	left, err := p.addExpr()
 	if err != nil {
 		return nil, err
@@ -440,42 +442,42 @@ func (p *parser) cmpExpr() (expr, error) {
 		if err != nil {
 			return nil, err
 		}
-		return binaryExpr{op: op, left: left, right: right}, nil
+		return BinaryExpr{Op: op, Left: left, Right: right}, nil
 	}
 	return left, nil
 }
 
 // inRHS parses the right side of IN: (SELECT...), (v,...), [a,...], or bare [a,..].
-// A tuple lhs with a parenthesised list of tuples becomes inExpr.tuples.
-func (p *parser) inRHS(lhs expr, global, not bool) (expr, error) {
+// A tuple lhs with a parenthesised list of tuples becomes InExpr.tuples.
+func (p *parser) inRHS(lhs Expr, global, not bool) (Expr, error) {
 	if p.isPunct("[") {
 		arr, err := p.arrayLiteral()
 		if err != nil {
 			return nil, err
 		}
-		return inExpr{global: global, not: not, lhs: lhs, list: arr.(arrayExpr).elems}, nil
+		return InExpr{Global: global, Not: not, Lhs: lhs, List: arr.(ArrayExpr).Elems}, nil
 	}
 	if err := p.eatPunct("("); err != nil {
 		return nil, err
 	}
 	if p.isKw("SELECT") || p.isKw("WITH") {
-		q, err := p.selectStmt()
+		q, err := p.SelectStmt()
 		if err != nil {
 			return nil, err
 		}
 		if err := p.eatPunct(")"); err != nil {
 			return nil, err
 		}
-		return inExpr{global: global, not: not, lhs: lhs, sub: q}, nil
+		return InExpr{Global: global, Not: not, Lhs: lhs, Sub: q}, nil
 	}
 	// Empty IN () — Coroot binds an empty array to this.
 	if p.isPunct(")") {
 		p.advance()
-		return inExpr{global: global, not: not, lhs: lhs, list: nil}, nil
+		return InExpr{Global: global, Not: not, Lhs: lhs, List: nil}, nil
 	}
 	// tuple-IN if lhs is a tuple and first element is a '(' group
-	if _, ok := lhs.(tupleExpr); ok && p.isPunct("(") {
-		var tuples [][]expr
+	if _, ok := lhs.(TupleExpr); ok && p.isPunct("(") {
+		var tuples [][]Expr
 		for {
 			if err := p.eatPunct("("); err != nil {
 				return nil, err
@@ -497,7 +499,7 @@ func (p *parser) inRHS(lhs expr, global, not bool) (expr, error) {
 		if err := p.eatPunct(")"); err != nil {
 			return nil, err
 		}
-		return inExpr{global: global, not: not, lhs: lhs, tuples: tuples}, nil
+		return InExpr{Global: global, Not: not, Lhs: lhs, Tuples: tuples}, nil
 	}
 	list, err := p.exprList()
 	if err != nil {
@@ -506,10 +508,10 @@ func (p *parser) inRHS(lhs expr, global, not bool) (expr, error) {
 	if err := p.eatPunct(")"); err != nil {
 		return nil, err
 	}
-	return inExpr{global: global, not: not, lhs: lhs, list: list}, nil
+	return InExpr{Global: global, Not: not, Lhs: lhs, List: list}, nil
 }
 
-func (p *parser) addExpr() (expr, error) {
+func (p *parser) addExpr() (Expr, error) {
 	left, err := p.mulExpr()
 	if err != nil {
 		return nil, err
@@ -520,12 +522,12 @@ func (p *parser) addExpr() (expr, error) {
 		if err != nil {
 			return nil, err
 		}
-		left = binaryExpr{op: op, left: left, right: right}
+		left = BinaryExpr{Op: op, Left: left, Right: right}
 	}
 	return left, nil
 }
 
-func (p *parser) mulExpr() (expr, error) {
+func (p *parser) mulExpr() (Expr, error) {
 	left, err := p.postfix()
 	if err != nil {
 		return nil, err
@@ -536,12 +538,12 @@ func (p *parser) mulExpr() (expr, error) {
 		if err != nil {
 			return nil, err
 		}
-		left = binaryExpr{op: op, left: left, right: right}
+		left = BinaryExpr{Op: op, Left: left, Right: right}
 	}
 	return left, nil
 }
 
-func (p *parser) postfix() (expr, error) {
+func (p *parser) postfix() (Expr, error) {
 	e, err := p.primary()
 	if err != nil {
 		return nil, err
@@ -556,21 +558,21 @@ func (p *parser) postfix() (expr, error) {
 			if err := p.eatPunct("]"); err != nil {
 				return nil, err
 			}
-			e = indexExpr{base: e, index: idx}
+			e = IndexExpr{Base: e, Index: idx}
 			continue
 		}
 		return e, nil
 	}
 }
 
-func (p *parser) primary() (expr, error) {
+func (p *parser) primary() (Expr, error) {
 	t := p.cur()
 	switch {
 	case p.isKw("NULL"):
 		p.advance()
-		return nullExpr{}, nil
+		return NullExpr{}, nil
 	case p.isIdentKw("CASE"):
-		return p.caseExpr()
+		return p.CaseExpr()
 	case p.isKw("INTERVAL"):
 		p.advance()
 		if p.cur().kind != tNumber {
@@ -581,10 +583,10 @@ func (p *parser) primary() (expr, error) {
 			return nil, p.errf("expected INTERVAL unit, got %q", p.cur().text)
 		}
 		unit := p.advance().text
-		return intervalExpr{n: n, unit: unit}, nil
+		return IntervalExpr{N: n, Unit: unit}, nil
 	case p.isPunct("*"):
 		p.advance()
-		return starExpr{}, nil
+		return StarExpr{}, nil
 	case p.isPunct("["):
 		return p.arrayLiteral()
 	case p.isPunct("("):
@@ -595,7 +597,7 @@ func (p *parser) primary() (expr, error) {
 			return nil, err
 		}
 		if p.isPunct(",") {
-			elems := []expr{first}
+			elems := []Expr{first}
 			for p.isPunct(",") {
 				p.advance()
 				e, err := p.expr()
@@ -607,7 +609,7 @@ func (p *parser) primary() (expr, error) {
 			if err := p.eatPunct(")"); err != nil {
 				return nil, err
 			}
-			return tupleExpr{elems: elems}, nil
+			return TupleExpr{Elems: elems}, nil
 		}
 		if err := p.eatPunct(")"); err != nil {
 			return nil, err
@@ -615,10 +617,10 @@ func (p *parser) primary() (expr, error) {
 		return first, nil
 	case t.kind == tNumber:
 		p.advance()
-		return numberExpr{text: t.text}, nil
+		return NumberExpr{Text: t.text}, nil
 	case t.kind == tString:
 		p.advance()
-		return stringExpr{text: t.text}, nil
+		return StringExpr{Text: t.text}, nil
 	case t.kind == tIdent:
 		return p.identOrCall()
 	}
@@ -626,7 +628,7 @@ func (p *parser) primary() (expr, error) {
 }
 
 // identOrCall parses ident, ident.field (nested column), or a function call.
-func (p *parser) identOrCall() (expr, error) {
+func (p *parser) identOrCall() (Expr, error) {
 	name := p.advance().text
 	if p.isPunct("(") {
 		return p.call(name)
@@ -637,42 +639,42 @@ func (p *parser) identOrCall() (expr, error) {
 			return nil, p.errf("expected field after '.', got %q", p.cur().text)
 		}
 		field := p.advance().text
-		return memberExpr{base: name, field: field}, nil
+		return MemberExpr{Base: name, Field: field}, nil
 	}
-	return identExpr{name: name}, nil
+	return IdentExpr{Name: name}, nil
 }
 
-func (p *parser) call(fn string) (expr, error) {
+func (p *parser) call(fn string) (Expr, error) {
 	if err := p.eatPunct("("); err != nil {
 		return nil, err
 	}
-	c := callExpr{fn: fn}
+	c := CallExpr{Fn: fn}
 	if p.isPunct(")") { // zero-arg call
 		p.advance()
 		return c, nil
 	}
 	if p.isKw("DISTINCT") {
 		p.advance()
-		c.distinct = true
+		c.Distinct = true
 	}
 	args, err := p.exprList()
 	if err != nil {
 		return nil, err
 	}
-	c.args = args
+	c.Args = args
 	if err := p.eatPunct(")"); err != nil {
 		return nil, err
 	}
 	return c, nil
 }
 
-func (p *parser) arrayLiteral() (expr, error) {
+func (p *parser) arrayLiteral() (Expr, error) {
 	if err := p.eatPunct("["); err != nil {
 		return nil, err
 	}
 	if p.isPunct("]") {
 		p.advance()
-		return arrayExpr{}, nil
+		return ArrayExpr{}, nil
 	}
 	elems, err := p.exprList()
 	if err != nil {
@@ -681,15 +683,15 @@ func (p *parser) arrayLiteral() (expr, error) {
 	if err := p.eatPunct("]"); err != nil {
 		return nil, err
 	}
-	return arrayExpr{elems: elems}, nil
+	return ArrayExpr{Elems: elems}, nil
 }
 
-func (p *parser) caseExpr() (expr, error) {
+func (p *parser) CaseExpr() (Expr, error) {
 	if !p.isIdentKw("CASE") {
 		return nil, p.errf("expected CASE, got %q", p.cur().text)
 	}
 	p.advance()
-	var c caseExpr
+	var c CaseExpr
 	for p.isIdentKw("WHEN") {
 		p.advance()
 		cond, err := p.expr()
@@ -704,7 +706,7 @@ func (p *parser) caseExpr() (expr, error) {
 		if err != nil {
 			return nil, err
 		}
-		c.whens = append(c.whens, whenClause{cond: cond, result: res})
+		c.Whens = append(c.Whens, WhenClause{Cond: cond, Result: res})
 	}
 	if p.isIdentKw("ELSE") {
 		p.advance()
@@ -712,7 +714,7 @@ func (p *parser) caseExpr() (expr, error) {
 		if err != nil {
 			return nil, err
 		}
-		c.els = e
+		c.Els = e
 	}
 	if !p.isIdentKw("END") {
 		return nil, p.errf("expected END, got %q", p.cur().text)

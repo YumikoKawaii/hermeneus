@@ -3,6 +3,9 @@ package translate
 import (
 	"errors"
 	"strings"
+
+	"github.com/yumikokawaii/hermeneus/internal/reader"
+	"github.com/yumikokawaii/hermeneus/internal/writer"
 )
 
 // ErrUnknownQuery is returned when a SELECT does not match any registered Coroot
@@ -65,7 +68,7 @@ func Classify(sql string) Kind {
 // Returns ErrUnknownQuery if the statement matches no registered pattern —
 // the upgrade tripwire (docs/DESIGN.md §3).
 func Translate(sql string) (Translated, error) {
-	stmt, err := parseSelect(sql)
+	stmt, err := reader.Parse(sql)
 	if err != nil {
 		return Translated{}, ErrUnknownQuery
 	}
@@ -73,7 +76,7 @@ func Translate(sql string) (Translated, error) {
 	if !ok {
 		return Translated{}, ErrUnknownQuery
 	}
-	out, err := buildStarRocks(stmt)
+	out, err := writer.Build(stmt)
 	if err != nil {
 		return Translated{}, ErrUnknownQuery
 	}
