@@ -11,7 +11,7 @@ import (
 // reader; callers synthesise it (turning a CH arrayJoin(<arr>) into UNNEST) and
 // the writer renders it. It satisfies reader.FromItem so it can sit in the AST.
 type UnnestRef struct {
-	Arg      reader.Expr
+	Arg      reader.Expression
 	ColAlias string
 }
 
@@ -25,7 +25,7 @@ type builder struct {
 	err error
 }
 
-func Build(s *reader.SelectStmt) (string, error) {
+func Build(s *reader.Statement) (string, error) {
 	b := &builder{}
 	b.selectStmt(s)
 	if b.err != nil {
@@ -42,7 +42,7 @@ func (b *builder) fail(format string, a ...any) {
 
 func (b *builder) w(s string) { b.sb.WriteString(s) }
 
-func (b *builder) selectStmt(s *reader.SelectStmt) {
+func (b *builder) selectStmt(s *reader.Statement) {
 	if len(s.With) > 0 {
 		b.w("WITH ")
 		for i, c := range s.With {
@@ -64,7 +64,7 @@ func (b *builder) selectStmt(s *reader.SelectStmt) {
 		if i > 0 {
 			b.w(", ")
 		}
-		b.expr(c.Expr)
+		b.expr(c.Expression)
 		if c.Alias != "" {
 			b.w(" AS ")
 			b.w(c.Alias)
@@ -97,7 +97,7 @@ func (b *builder) selectStmt(s *reader.SelectStmt) {
 			if i > 0 {
 				b.w(", ")
 			}
-			b.expr(it.Expr)
+			b.expr(it.Expression)
 			if it.Desc {
 				b.w(" DESC")
 			}
@@ -156,26 +156,26 @@ func (b *builder) fromItem(f reader.FromItem) {
 	}
 }
 
-func (b *builder) expr(e reader.Expr) {
+func (b *builder) expr(e reader.Expression) {
 	switch v := e.(type) {
-	case reader.IdentExpr:
+	case reader.IdentExpression:
 		b.w(v.Name)
-	case reader.MemberExpr:
+	case reader.MemberExpression:
 		// CH Nested parallel-array column Events.X -> SR backtick Array column.
 		if v.Base == "Events" && (v.Field == "Timestamp" || v.Field == "Name" || v.Field == "Attributes") {
 			b.w("`Events." + v.Field + "`")
 			return
 		}
 		b.w(v.Base + "." + v.Field)
-	case reader.NumberExpr:
+	case reader.NumberExpression:
 		b.w(v.Text)
-	case reader.StringExpr:
+	case reader.StringExpression:
 		b.w(v.Text)
-	case reader.NullExpr:
+	case reader.NullExpression:
 		b.w("NULL")
-	case reader.StarExpr:
+	case reader.StarExpression:
 		b.w("*")
-	case reader.ArrayExpr:
+	case reader.ArrayExpression:
 		b.w("[")
 		for i, el := range v.Elems {
 			if i > 0 {
@@ -184,7 +184,7 @@ func (b *builder) expr(e reader.Expr) {
 			b.expr(el)
 		}
 		b.w("]")
-	case reader.TupleExpr:
+	case reader.TupleExpression:
 		b.w("(")
 		for i, el := range v.Elems {
 			if i > 0 {
@@ -193,35 +193,35 @@ func (b *builder) expr(e reader.Expr) {
 			b.expr(el)
 		}
 		b.w(")")
-	case reader.IndexExpr:
+	case reader.IndexExpression:
 		b.expr(v.Base)
 		b.w("[")
 		b.expr(v.Index)
 		b.w("]")
-	case reader.BinaryExpr:
+	case reader.BinaryExpression:
 		b.binary(v)
-	case reader.NotExpr:
+	case reader.NotExpression:
 		b.w("NOT ")
 		b.expr(v.X)
-	case reader.CaseExpr:
+	case reader.CaseExpression:
 		b.caseExpr(v)
-	case reader.InExpr:
+	case reader.InExpression:
 		b.inExpr(v)
-	case reader.CallExpr:
+	case reader.CallExpression:
 		b.call(v)
-	case reader.IntervalExpr:
+	case reader.IntervalExpression:
 		b.fail("bare INTERVAL not expected outside toStartOfInterval")
 	default:
 		b.fail("unknown expr %T", e)
 	}
 }
 
-func (b *builder) binary(v reader.BinaryExpr) {
+func (b *builder) binary(v reader.BinaryExpression) {
 	// max(End)+1 -> date_add(max(End), INTERVAL 1 SECOND)
 	if v.Op == "+" {
-		if c, ok := v.Left.(reader.CallExpr); ok && c.Fn == "max" &&
+		if c, ok := v.Left.(reader.CallExpression); ok && c.Fn == "max" &&
 			isNumber(v.Right, "1") && len(c.Args) == 1 {
-			if id, ok := c.Args[0].(reader.IdentExpr); ok && id.Name == "End" {
+			if id, ok := c.Args[0].(reader.IdentExpression); ok && id.Name == "End" {
 				b.w("date_add(max(End), INTERVAL 1 SECOND)")
 				return
 			}
@@ -240,7 +240,7 @@ func (b *builder) binary(v reader.BinaryExpr) {
 	b.expr(v.Right)
 }
 
-func (b *builder) caseExpr(v reader.CaseExpr) {
+func (b *builder) caseExpr(v reader.CaseExpression) {
 	b.w("CASE")
 	for _, w := range v.Whens {
 		b.w(" WHEN ")
@@ -255,7 +255,7 @@ func (b *builder) caseExpr(v reader.CaseExpr) {
 	b.w(" END")
 }
 
-func (b *builder) inExpr(v reader.InExpr) {
+func (b *builder) inExpr(v reader.InExpression) {
 	// tuple-IN is rewritten to an OR chain, so it replaces the whole "lhs IN …".
 	if v.Tuples != nil {
 		b.tupleIn(v.Lhs, v.Tuples, v.Not)
@@ -289,8 +289,8 @@ func (b *builder) inExpr(v reader.InExpr) {
 
 // tupleIn rewrites (a,b) IN ((x,y),(z,w)) into an OR of equality pairs, since
 // StarRocks does not support row-tuple IN. NOT (a,b) IN (...) negates the group.
-func (b *builder) tupleIn(lhs reader.Expr, tuples [][]reader.Expr, not bool) {
-	tup, ok := lhs.(reader.TupleExpr)
+func (b *builder) tupleIn(lhs reader.Expression, tuples [][]reader.Expression, not bool) {
+	tup, ok := lhs.(reader.TupleExpression)
 	if !ok || len(tup.Elems) != 2 {
 		b.fail("tuple IN lhs must be a 2-tuple")
 		return
@@ -325,7 +325,7 @@ func (b *builder) tupleIn(lhs reader.Expr, tuples [][]reader.Expr, not bool) {
 	b.w(")")
 }
 
-func (b *builder) call(c reader.CallExpr) {
+func (b *builder) call(c reader.CallExpression) {
 	fn := c.Fn
 	if fn == "intDiv" && len(c.Args) == 2 {
 		b.w("floor((")
@@ -409,14 +409,14 @@ var simpleFnMap = map[string]string{
 	"any":        "any_value",
 }
 
-func (b *builder) plainFn(name string, args []reader.Expr) {
+func (b *builder) plainFn(name string, args []reader.Expression) {
 	b.w(name)
 	b.w("(")
 	b.args(args)
 	b.w(")")
 }
 
-func (b *builder) args(args []reader.Expr) {
+func (b *builder) args(args []reader.Expression) {
 	for i, a := range args {
 		if i > 0 {
 			b.w(", ")
@@ -425,7 +425,7 @@ func (b *builder) args(args []reader.Expr) {
 	}
 }
 
-func (b *builder) needArgs(c reader.CallExpr, n int, fn func()) {
+func (b *builder) needArgs(c reader.CallExpression, n int, fn func()) {
 	if len(c.Args) != n {
 		b.fail("%s expects %d args, got %d", c.Fn, n, len(c.Args))
 		return
@@ -433,7 +433,7 @@ func (b *builder) needArgs(c reader.CallExpr, n int, fn func()) {
 	fn()
 }
 
-func (b *builder) multiIf(args []reader.Expr) {
+func (b *builder) multiIf(args []reader.Expression) {
 	if len(args) < 3 || len(args)%2 == 0 {
 		b.fail("multiIf needs an odd arg count >= 3")
 		return
@@ -451,7 +451,7 @@ func (b *builder) multiIf(args []reader.Expr) {
 	b.w(" END")
 }
 
-func (b *builder) regexpFn(fn string, args []reader.Expr) {
+func (b *builder) regexpFn(fn string, args []reader.Expression) {
 	if len(args) != 2 {
 		b.fail("%s expects 2 args", fn)
 		return
@@ -465,7 +465,7 @@ func (b *builder) regexpFn(fn string, args []reader.Expr) {
 		return
 	}
 	// hasToken(col, 'tok') -> regexp(col, '\btok\b')
-	s, ok := args[1].(reader.StringExpr)
+	s, ok := args[1].(reader.StringExpression)
 	if !ok || len(s.Text) < 2 {
 		b.fail("hasToken token must be a string literal")
 		return
@@ -476,12 +476,12 @@ func (b *builder) regexpFn(fn string, args []reader.Expr) {
 	b.w(fmt.Sprintf(`, '\\b%s\\b')`, tok))
 }
 
-func (b *builder) toStartOfInterval(args []reader.Expr) {
+func (b *builder) toStartOfInterval(args []reader.Expression) {
 	if len(args) != 2 {
 		b.fail("toStartOfInterval expects 2 args")
 		return
 	}
-	iv, ok := args[1].(reader.IntervalExpr)
+	iv, ok := args[1].(reader.IntervalExpression)
 	if !ok || !strings.EqualFold(iv.Unit, "second") {
 		b.fail("toStartOfInterval second arg must be INTERVAL n second")
 		return
@@ -491,12 +491,12 @@ func (b *builder) toStartOfInterval(args []reader.Expr) {
 	b.w(fmt.Sprintf(")/%s)*%s)", iv.N, iv.N))
 }
 
-func (b *builder) toDateTime64(args []reader.Expr) {
+func (b *builder) toDateTime64(args []reader.Expression) {
 	if len(args) < 1 {
 		b.fail("toDateTime64 expects a literal")
 		return
 	}
-	s, ok := args[0].(reader.StringExpr)
+	s, ok := args[0].(reader.StringExpression)
 	if !ok {
 		b.fail("toDateTime64 first arg must be a string literal")
 		return
@@ -513,12 +513,12 @@ func (b *builder) toDateTime64(args []reader.Expr) {
 }
 
 // roundDown(x, [b0..bn]) -> CASE ladder snapping x down to the largest bound<=x.
-func (b *builder) roundDown(args []reader.Expr) {
+func (b *builder) roundDown(args []reader.Expression) {
 	if len(args) != 2 {
 		b.fail("roundDown expects 2 args")
 		return
 	}
-	arr, ok := args[1].(reader.ArrayExpr)
+	arr, ok := args[1].(reader.ArrayExpression)
 	if !ok || len(arr.Elems) == 0 {
 		b.fail("roundDown second arg must be a non-empty array literal")
 		return
@@ -539,14 +539,14 @@ func (b *builder) roundDown(args []reader.Expr) {
 	b.w(fmt.Sprintf(" ELSE %s END", bounds[0]))
 }
 
-func isNumber(e reader.Expr, want string) bool {
-	n, ok := e.(reader.NumberExpr)
+func isNumber(e reader.Expression, want string) bool {
+	n, ok := e.(reader.NumberExpression)
 	return ok && n.Text == want
 }
 
 // exprText renders a simple expr back to text for literal-bound contexts
 // (roundDown bounds, Duration/1000000). Returns "" for anything non-trivial.
-func exprText(e reader.Expr) string {
+func exprText(e reader.Expression) string {
 	sub := &builder{}
 	sub.expr(e)
 	if sub.err != nil {

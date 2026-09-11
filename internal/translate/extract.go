@@ -25,30 +25,30 @@ func fromTableName(f reader.FromItem) (string, bool) {
 	}
 }
 
-func colIdent(c reader.SelectCol) (string, bool) {
-	id, ok := c.Expr.(reader.IdentExpr)
+func colIdent(c reader.Column) (string, bool) {
+	id, ok := c.Expression.(reader.IdentExpression)
 	if !ok {
 		return "", false
 	}
 	return id.Name, true
 }
 
-func colMember(c reader.SelectCol) (string, string, bool) {
-	m, ok := c.Expr.(reader.MemberExpr)
+func colMember(c reader.Column) (string, string, bool) {
+	m, ok := c.Expression.(reader.MemberExpression)
 	if !ok {
 		return "", "", false
 	}
 	return m.Base, m.Field, true
 }
 
-func colCall(c reader.SelectCol) (reader.CallExpr, bool) {
-	fn, ok := c.Expr.(reader.CallExpr)
+func colCall(c reader.Column) (reader.CallExpression, bool) {
+	fn, ok := c.Expression.(reader.CallExpression)
 	return fn, ok
 }
 
 // recognise returns the ResultShape for a parsed SELECT, applying any AST
 // pre-transform the shape requires, or false if no shape matches.
-func recognise(s *reader.SelectStmt) (ResultShape, bool) {
+func recognise(s *reader.Statement) (ResultShape, bool) {
 	table, _ := fromTableName(s.From)
 
 	// GetServicesFromLogs / GetServicesFromTraces: SELECT DISTINCT ServiceName FROM <tbl>
@@ -80,7 +80,7 @@ func recognise(s *reader.SelectStmt) (ResultShape, bool) {
 		}
 		// log attribute-value list: DISTINCT arrayJoin([LogAttributes[..], ResourceAttributes[..]])
 		if c, ok := colCall(s.Cols[0]); ok && c.Fn == "arrayJoin" && len(c.Args) == 1 {
-			if arr, ok := c.Args[0].(reader.ArrayExpr); ok {
+			if arr, ok := c.Args[0].(reader.ArrayExpression); ok {
 				unnestLogAttrValues(s, arr)
 				return shape1("v", "String"), true
 			}
@@ -91,7 +91,7 @@ func recognise(s *reader.SelectStmt) (ResultShape, bool) {
 	if !s.Distinct && len(s.Cols) == 1 && table == "otel_logs" {
 		if c, ok := colCall(s.Cols[0]); ok && c.Fn == "arrayJoin" &&
 			s.Cols[0].Alias == "k" && len(c.Args) == 1 {
-			if inner, ok := c.Args[0].(reader.CallExpr); ok && inner.Fn == "arrayConcat" {
+			if inner, ok := c.Args[0].(reader.CallExpression); ok && inner.Fn == "arrayConcat" {
 				unnestLogAttrNames(s, c.Args[0])
 				return shape1("k", "String"), true
 			}
@@ -241,8 +241,8 @@ func spanShape() ResultShape {
 //	SELECT k FROM otel_logs, unnest(<inner>) AS t(k) ...
 //
 // by moving the arrayConcat arg into an UNNEST lateral join column named k.
-func unnestLogAttrNames(s *reader.SelectStmt, inner reader.Expr) {
-	s.Cols = []reader.SelectCol{{Expr: reader.IdentExpr{Name: "k"}}}
+func unnestLogAttrNames(s *reader.Statement, inner reader.Expression) {
+	s.Cols = []reader.Column{{Expression: reader.IdentExpression{Name: "k"}}}
 	s.From = reader.JoinRef{
 		Left:  s.From,
 		Right: writer.UnnestRef{Arg: inner, ColAlias: "k"},
@@ -257,8 +257,8 @@ func unnestLogAttrNames(s *reader.SelectStmt, inner reader.Expr) {
 // into
 //
 //	SELECT DISTINCT k FROM otel_logs, unnest([A[x], B[y]]) AS t(k) ...
-func unnestLogAttrValues(s *reader.SelectStmt, arr reader.ArrayExpr) {
-	s.Cols = []reader.SelectCol{{Expr: reader.IdentExpr{Name: "k"}}}
+func unnestLogAttrValues(s *reader.Statement, arr reader.ArrayExpression) {
+	s.Cols = []reader.Column{{Expression: reader.IdentExpression{Name: "k"}}}
 	s.From = reader.JoinRef{
 		Left:  s.From,
 		Right: writer.UnnestRef{Arg: arr, ColAlias: "k"},
