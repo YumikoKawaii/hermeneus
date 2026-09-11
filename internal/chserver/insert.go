@@ -1,21 +1,15 @@
 package chserver
 
 import (
-	"context"
-	"errors"
 	"fmt"
 	"log"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/ClickHouse/ch-go/proto"
-	"github.com/yumikokawaii/hermeneus/internal/sink"
 )
 
 var insertRe = regexp.MustCompile("(?is)^\\s*INSERT\\s+INTO\\s+[`\"]?([A-Za-z_][A-Za-z0-9_.]*)[`\"]?\\s*\\(([^)]*)\\)")
-
-const srDateTime = "2006-01-02 15:04:05.000000"
 
 func parseInsert(body string) (table string, cols []string, ok bool) {
 	m := insertRe.FindStringSubmatch(body)
@@ -65,18 +59,9 @@ func (s *Server) handleInsert(cc *connCtx, body string) error {
 		return err
 	}
 
-	batch := sink.Batch{Table: table, Columns: names}
-	peerIdx := -1
-	if table == "otel_traces" {
-		for i, n := range names {
-			if n == "SpanAttributes" {
-				peerIdx = i
-			}
-		}
-		if peerIdx >= 0 {
-			batch.Columns = append(batch.Columns, "NetSockPeerAddr")
-		}
-	}
+	// Sink wiring is removed for now: decode the incoming blocks to keep the
+	// wire in sync, then discard them and ack. Ingestion is silently a no-op
+	// until a sink is wired back in.
 	for {
 		code, err := s.readCode(cc.r)
 		if err != nil {
@@ -99,14 +84,6 @@ func (s *Server) handleInsert(cc *connCtx, body string) error {
 		if block.End() {
 			break
 		}
-		if err := appendBlock(&batch, results, peerIdx); err != nil {
-			return err
-		}
-	}
-
-	if err := s.sink.Write(context.Background(), batch); err != nil {
-		log.Printf("insert %s (%d rows): sink failed: %v", table, len(batch.Rows), err)
-		return s.sendException(cc.conn, cc.buf, cc.ver, "hermeneus: insert sink failed: "+err.Error())
 	}
 	return s.sendEndOfStream(cc)
 }
@@ -119,66 +96,4 @@ func (s *Server) decodeBlock(cc *connCtx, target proto.Result) (proto.Block, err
 	var block proto.Block
 	err := block.DecodeBlock(cc.r, cc.ver, target)
 	return block, err
-}
-
-func appendBlock(b *sink.Batch, cols proto.Results, peerIdx int) error {
-	if len(cols) == 0 {
-		return errors.New("empty block")
-	}
-	rows := cols[0].Data.Rows()
-	for i := 0; i < rows; i++ {
-		row := make([]any, len(cols), len(b.Columns))
-		for j, c := range cols {
-			v, err := cellValue(c.Data, i)
-			if err != nil {
-				return fmt.Errorf("column %s: %w", c.Name, err)
-			}
-			row[j] = v
-		}
-		if peerIdx >= 0 {
-			addr := ""
-			if m, ok := row[peerIdx].(map[string]string); ok {
-				addr = m["net.sock.peer.addr"]
-			}
-			row = append(row, addr)
-		}
-		b.Rows = append(b.Rows, row)
-	}
-	return nil
-}
-
-func cellValue(col proto.ColResult, i int) (any, error) {
-	switch c := col.(type) {
-	case *proto.ColStr:
-		return c.Row(i), nil
-	case *proto.ColLowCardinality[string]:
-		return c.Row(i), nil
-	case *proto.ColInt32:
-		return c.Row(i), nil
-	case *proto.ColInt64:
-		return c.Row(i), nil
-	case *proto.ColUInt32:
-		return c.Row(i), nil
-	case *proto.ColUInt64:
-		return int64(c.Row(i)), nil
-	case *proto.ColDateTime:
-		return c.Row(i).UTC().Format(srDateTime), nil
-	case *proto.ColDateTime64:
-		return c.Row(i).UTC().Format(srDateTime), nil
-	case *proto.ColMap[string, string]:
-		return c.Row(i), nil
-	case *proto.ColArr[string]:
-		return c.Row(i), nil
-	case *proto.ColArr[time.Time]:
-		ts := c.Row(i)
-		out := make([]string, len(ts))
-		for k, t := range ts {
-			out[k] = t.UTC().Format(srDateTime)
-		}
-		return out, nil
-	case *proto.ColArr[map[string]string]:
-		return c.Row(i), nil
-	default:
-		return nil, fmt.Errorf("unsupported column type %T", col)
-	}
 }

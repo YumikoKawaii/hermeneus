@@ -11,7 +11,6 @@ import (
 	"github.com/ClickHouse/ch-go/compress"
 	"github.com/ClickHouse/ch-go/proto"
 	"github.com/yumikokawaii/hermeneus/internal/config"
-	"github.com/yumikokawaii/hermeneus/internal/sink"
 	"github.com/yumikokawaii/hermeneus/internal/system"
 	"github.com/yumikokawaii/hermeneus/internal/translate"
 )
@@ -21,13 +20,12 @@ type Querier interface {
 }
 
 type Server struct {
-	cfg  config.Config
-	sr   Querier
-	sink sink.Sink
+	cfg config.Config
+	sr  Querier
 }
 
-func New(cfg config.Config, sr Querier, out sink.Sink) *Server {
-	return &Server{cfg: cfg, sr: sr, sink: out}
+func New(cfg config.Config, sr Querier) *Server {
+	return &Server{cfg: cfg, sr: sr}
 }
 
 func (s *Server) ListenAndServe(ctx context.Context) error {

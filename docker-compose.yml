@@ -45,12 +45,8 @@ services:
         condition: service_completed_successfully
     environment:
       HERMENEUS_LISTEN_ADDR: ':9000'
-      HERMENEUS_SINK: 'streamload'
       HERMENEUS_DATABASE: 'hermeneus'
       HERMENEUS_SR_MYSQL_DSN: 'root:@tcp(starrocks:9030)/hermeneus'
-      HERMENEUS_SR_STREAM_LOAD_HOST: 'starrocks:8030'
-      HERMENEUS_SR_STREAM_LOAD_USER: 'root'
-      HERMENEUS_SR_STREAM_LOAD_PASS: ''
     ports:
       - '127.0.0.1:9000:9000'
 

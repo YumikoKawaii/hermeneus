@@ -8,8 +8,6 @@ import (
 
 	"github.com/yumikokawaii/hermeneus/internal/chserver"
 	"github.com/yumikokawaii/hermeneus/internal/config"
-	"github.com/yumikokawaii/hermeneus/internal/relay"
-	"github.com/yumikokawaii/hermeneus/internal/sink"
 	"github.com/yumikokawaii/hermeneus/internal/starrocks"
 )
 
@@ -24,23 +22,8 @@ func main() {
 		log.Fatalf("starrocks: %v", err)
 	}
 
-	var out sink.Sink
-	switch cfg.Sink {
-	case config.SinkStreamLoad:
-		out = sr
-	case config.SinkKafka:
-		p, err := relay.NewPublisher(cfg.Kafka)
-		if err != nil {
-			log.Fatalf("relay publisher: %v", err)
-		}
-		defer p.Close()
-		out = p
-	default:
-		log.Fatalf("unknown sink %q", cfg.Sink)
-	}
-
-	srv := chserver.New(cfg, sr, out)
-	log.Printf("hermeneus listening on %s (CH-native) -> StarRocks, insert sink=%s", cfg.ListenAddr, cfg.Sink)
+	srv := chserver.New(cfg, sr)
+	log.Printf("hermeneus listening on %s (CH-native) -> StarRocks (insert sink unwired)", cfg.ListenAddr)
 	if err := srv.ListenAndServe(ctx); err != nil && err != context.Canceled {
 		log.Fatalf("server: %v", err)
 	}
