@@ -11,6 +11,7 @@ import (
 	"github.com/ClickHouse/ch-go/compress"
 	"github.com/ClickHouse/ch-go/proto"
 	"github.com/yumikokawaii/hermeneus/internal/config"
+	"github.com/yumikokawaii/hermeneus/internal/extractor"
 	"github.com/yumikokawaii/hermeneus/internal/system"
 	"github.com/yumikokawaii/hermeneus/internal/translate"
 )
@@ -19,14 +20,19 @@ type Querier interface {
 	Query(ctx context.Context, sqlText string) (*sql.Rows, error)
 }
 
+type Writer interface {
+	Write(target string, records []extractor.Record) error
+}
+
 type Server struct {
 	cfg config.Config
 	sr  Querier
+	w   Writer
 	tr  *translate.Translator
 }
 
-func New(cfg config.Config, sr Querier, tr *translate.Translator) *Server {
-	return &Server{cfg: cfg, sr: sr, tr: tr}
+func New(cfg config.Config, sr Querier, w Writer, tr *translate.Translator) *Server {
+	return &Server{cfg: cfg, sr: sr, w: w, tr: tr}
 }
 
 func (s *Server) ListenAndServe(ctx context.Context) error {

@@ -57,7 +57,7 @@ func (c *Client) streamLoad(ctx context.Context, target string, records []extrac
 		"columns":           strings.Join(cols, ","),
 		"Expect":            "100-continue",
 	}
-	url := fmt.Sprintf("http://%s/api/%s/%s/_stream_load", c.cfg.StreamLoadHost, c.cfg.Database, target)
+	url := fmt.Sprintf("http://%s:%d/api/%s/%s/_stream_load", c.cfg.Host, c.cfg.HTTPPort, c.cfg.Database, target)
 	resp, err := c.put(ctx, url, payload, headers)
 	if err != nil {
 		return err
@@ -83,7 +83,7 @@ func (c *Client) put(ctx context.Context, url string, payload []byte, headers ma
 		if err != nil {
 			return nil, err
 		}
-		req.SetBasicAuth(c.cfg.StreamLoadUser, c.cfg.StreamLoadPass)
+		req.SetBasicAuth(c.cfg.User, c.cfg.Password)
 		for k, v := range headers {
 			req.Header.Set(k, v)
 		}

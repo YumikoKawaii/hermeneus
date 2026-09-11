@@ -25,15 +25,19 @@ func New(cfg config.StarRocks) (*Client, error) {
 			return http.ErrUseLastResponse
 		},
 	}}
-	if cfg.MySQLDSN == "" {
+	if cfg.Host == "" {
 		return c, nil
 	}
-	db, err := sql.Open("mysql", cfg.MySQLDSN)
+	db, err := sql.Open("mysql", dsn(cfg))
 	if err != nil {
 		return nil, err
 	}
 	c.db = db
 	return c, nil
+}
+
+func dsn(cfg config.StarRocks) string {
+	return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s", cfg.User, cfg.Password, cfg.Host, cfg.QueryPort, cfg.Database)
 }
 
 func (c *Client) Query(ctx context.Context, sqlText string) (*sql.Rows, error) {

@@ -25,7 +25,7 @@ func main() {
 
 	tr := translate.New(starrocks.StarRocks{})
 
-	srv := chserver.New(cfg, sr, tr)
+	srv := chserver.New(cfg, sr, sr, tr)
 	log.Printf("hermeneus listening on %s (CH-native) -> StarRocks (insert sink unwired)", cfg.ListenAddr)
 	if err := srv.ListenAndServe(ctx); err != nil && err != context.Canceled {
 		log.Fatalf("server: %v", err)

@@ -46,7 +46,10 @@ services:
     environment:
       HERMENEUS_LISTEN_ADDR: ':9000'
       HERMENEUS_DATABASE: 'hermeneus'
-      HERMENEUS_SR_MYSQL_DSN: 'root:@tcp(starrocks:9030)/hermeneus'
+      HERMENEUS_SR_HOST: 'starrocks'
+      HERMENEUS_SR_QUERY_PORT: '9030'
+      HERMENEUS_SR_HTTP_PORT: '8030'
+      HERMENEUS_SR_USER: 'root'
     ports:
       - '127.0.0.1:9000:9000'
 

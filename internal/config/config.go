@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -22,12 +23,13 @@ type CHServer struct {
 }
 
 type StarRocks struct {
-	MySQLDSN       string `yaml:"mysqlDSN"`
-	Database       string `yaml:"database"`
-	WriteMode      string `yaml:"writeMode"`
-	StreamLoadHost string `yaml:"streamLoadHost"`
-	StreamLoadUser string `yaml:"streamLoadUser"`
-	StreamLoadPass string `yaml:"streamLoadPass"`
+	Host      string `yaml:"host"`
+	QueryPort int    `yaml:"queryPort"`
+	HTTPPort  int    `yaml:"httpPort"`
+	User      string `yaml:"user"`
+	Password  string `yaml:"password"`
+	Database  string `yaml:"database"`
+	WriteMode string `yaml:"writeMode"`
 }
 
 type Kafka struct {
@@ -48,6 +50,9 @@ func Default() Config {
 			Database:        "default",
 		},
 		StarRocks: StarRocks{
+			QueryPort: 9030,
+			HTTPPort:  8030,
+			User:      "root",
 			WriteMode: "stream_load",
 		},
 		Kafka: Kafka{
@@ -71,20 +76,27 @@ func FromEnv() Config {
 		c.Server.Database = v
 		c.StarRocks.Database = v
 	}
-	if v := os.Getenv("HERMENEUS_SR_MYSQL_DSN"); v != "" {
-		c.StarRocks.MySQLDSN = v
+	if v := os.Getenv("HERMENEUS_SR_HOST"); v != "" {
+		c.StarRocks.Host = v
+	}
+	if v := os.Getenv("HERMENEUS_SR_QUERY_PORT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.StarRocks.QueryPort = n
+		}
+	}
+	if v := os.Getenv("HERMENEUS_SR_HTTP_PORT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.StarRocks.HTTPPort = n
+		}
+	}
+	if v := os.Getenv("HERMENEUS_SR_USER"); v != "" {
+		c.StarRocks.User = v
+	}
+	if v := os.Getenv("HERMENEUS_SR_PASSWORD"); v != "" {
+		c.StarRocks.Password = v
 	}
 	if v := os.Getenv("HERMENEUS_SR_WRITE_MODE"); v != "" {
 		c.StarRocks.WriteMode = v
-	}
-	if v := os.Getenv("HERMENEUS_SR_STREAM_LOAD_HOST"); v != "" {
-		c.StarRocks.StreamLoadHost = v
-	}
-	if v := os.Getenv("HERMENEUS_SR_STREAM_LOAD_USER"); v != "" {
-		c.StarRocks.StreamLoadUser = v
-	}
-	if v := os.Getenv("HERMENEUS_SR_STREAM_LOAD_PASS"); v != "" {
-		c.StarRocks.StreamLoadPass = v
 	}
 	if v := os.Getenv("HERMENEUS_KAFKA_BROKERS"); v != "" {
 		c.Kafka.Brokers = strings.Split(v, ",")
