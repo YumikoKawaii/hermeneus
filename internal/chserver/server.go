@@ -22,10 +22,11 @@ type Querier interface {
 type Server struct {
 	cfg config.Config
 	sr  Querier
+	tr  *translate.Translator
 }
 
-func New(cfg config.Config, sr Querier) *Server {
-	return &Server{cfg: cfg, sr: sr}
+func New(cfg config.Config, sr Querier, tr *translate.Translator) *Server {
+	return &Server{cfg: cfg, sr: sr, tr: tr}
 }
 
 func (s *Server) ListenAndServe(ctx context.Context) error {
@@ -146,7 +147,7 @@ func (s *Server) handleQuery(cc *connCtx) error {
 		return s.sendResult(cc, nil)
 	}
 
-	tr, err := translate.Translate(body)
+	tr, err := s.tr.Translate(body)
 	if err != nil {
 		log.Printf("unrecognised query: %s", body)
 		return s.sendException(cc.conn, cc.buf, cc.ver, "hermeneus: unrecognised query")

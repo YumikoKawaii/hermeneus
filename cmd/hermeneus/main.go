@@ -6,9 +6,11 @@ import (
 	"os/signal"
 	"syscall"
 
+	srwriter "github.com/yumikokawaii/hermeneus/internal/adapter/starrocks"
 	"github.com/yumikokawaii/hermeneus/internal/chserver"
 	"github.com/yumikokawaii/hermeneus/internal/config"
 	"github.com/yumikokawaii/hermeneus/internal/starrocks"
+	"github.com/yumikokawaii/hermeneus/internal/translate"
 )
 
 func main() {
@@ -22,7 +24,9 @@ func main() {
 		log.Fatalf("starrocks: %v", err)
 	}
 
-	srv := chserver.New(cfg, sr)
+	tr := translate.New(srwriter.StarRocks{})
+
+	srv := chserver.New(cfg, sr, tr)
 	log.Printf("hermeneus listening on %s (CH-native) -> StarRocks (insert sink unwired)", cfg.ListenAddr)
 	if err := srv.ListenAndServe(ctx); err != nil && err != context.Canceled {
 		log.Fatalf("server: %v", err)

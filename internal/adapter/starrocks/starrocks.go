@@ -1,4 +1,7 @@
-package writer
+// Package starrocks is the StarRocks writer: it renders the engine-neutral
+// reader IR to StarRocks SQL. It is one adapter behind translate.Writer; other
+// backends live beside it under internal/adapter.
+package starrocks
 
 import (
 	"fmt"
@@ -8,8 +11,9 @@ import (
 )
 
 // UnnestRef is a StarRocks lateral UNNEST column. It is not produced by the
-// reader; callers synthesise it (turning a CH arrayJoin(<arr>) into UNNEST) and
-// the writer renders it. It satisfies reader.FromItem so it can sit in the AST.
+// reader; lowerArrayJoin synthesises it (turning a CH arrayJoin(<arr>) into
+// UNNEST) and the writer renders it. It satisfies reader.FromItem so it can sit
+// in the AST.
 type UnnestRef struct {
 	Arg      reader.Expression
 	ColAlias string
@@ -17,21 +21,49 @@ type UnnestRef struct {
 
 func (UnnestRef) IsFrom() {}
 
-// Build prints a parsed CH SELECT as StarRocks SQL, applying every CH→SR
+// StarRocks is the StarRocks implementation of translate.Writer.
+type StarRocks struct{}
+
+// Build renders a parsed CH SELECT as StarRocks SQL, applying every CH→SR
 // construct mapping structurally over the AST. Any function or construct it
 // cannot map returns an error — fail-loud tripwire (the real IR seam).
-type builder struct {
-	sb  strings.Builder
-	err error
-}
-
-func Build(s *reader.Statement) (string, error) {
+func (StarRocks) Build(s *reader.Statement) (string, error) {
+	lowerArrayJoin(s)
 	b := &builder{}
 	b.selectStmt(s)
 	if b.err != nil {
 		return "", b.err
 	}
 	return b.sb.String(), nil
+}
+
+type builder struct {
+	sb  strings.Builder
+	err error
+}
+
+// lowerArrayJoin rewrites a select-list arrayJoin into a StarRocks UNNEST
+// lateral. Coroot emits arrayJoin only as the single output column of the log
+// attribute-name / attribute-value list queries:
+//
+//	SELECT [DISTINCT] arrayJoin(<X>) [AS a] FROM t ...
+//	  -> SELECT [DISTINCT] k FROM t, unnest(<X>) AS t(k) ...
+//
+// StarRocks has no arrayJoin; UNNEST is its lateral-explode form.
+func lowerArrayJoin(s *reader.Statement) {
+	if len(s.Cols) != 1 {
+		return
+	}
+	call, ok := s.Cols[0].Expression.(reader.CallExpression)
+	if !ok || call.Fn != "arrayJoin" || len(call.Args) != 1 {
+		return
+	}
+	s.Cols = []reader.Column{{Expression: reader.IdentExpression{Name: "k"}}}
+	s.From = reader.JoinRef{
+		Left:  s.From,
+		Right: UnnestRef{Arg: call.Args[0], ColAlias: "k"},
+		Comma: true,
+	}
 }
 
 func (b *builder) fail(format string, a ...any) {

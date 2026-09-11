@@ -5,8 +5,23 @@ import (
 	"strings"
 
 	"github.com/yumikokawaii/hermeneus/internal/reader"
-	"github.com/yumikokawaii/hermeneus/internal/writer"
 )
+
+// Writer renders the engine-neutral reader IR to a target SQL dialect. Each
+// backend (StarRocks, …) provides an implementation; the concrete one is chosen
+// by config and injected into the Translator. A Writer must fail loud: any
+// construct it cannot map returns an error rather than a wrong query.
+type Writer interface {
+	Build(*reader.Statement) (string, error)
+}
+
+// Translator turns Coroot ClickHouse SELECTs into target SQL using an injected
+// Writer. Construct it with New.
+type Translator struct {
+	w Writer
+}
+
+func New(w Writer) *Translator { return &Translator{w: w} }
 
 // ErrUnknownQuery is returned when a SELECT does not match any registered Coroot
 // query. The server turns this into a ClickHouse exception AND logs the raw SQL —
@@ -64,10 +79,10 @@ func Classify(sql string) Kind {
 	}
 }
 
-// Translate rewrites a known Coroot ClickHouse SELECT into StarRocks SQL.
-// Returns ErrUnknownQuery if the statement matches no registered pattern —
-// the upgrade tripwire (docs/DESIGN.md §3).
-func Translate(sql string) (Translated, error) {
+// Translate rewrites a known Coroot ClickHouse SELECT into the target SQL of the
+// injected Writer. Returns ErrUnknownQuery if the statement matches no known
+// Coroot query, or the Writer cannot map it — the upgrade tripwire.
+func (t *Translator) Translate(sql string) (Translated, error) {
 	stmt, err := reader.Parse(sql)
 	if err != nil {
 		return Translated{}, ErrUnknownQuery
@@ -76,7 +91,7 @@ func Translate(sql string) (Translated, error) {
 	if !ok {
 		return Translated{}, ErrUnknownQuery
 	}
-	out, err := writer.Build(stmt)
+	out, err := t.w.Build(stmt)
 	if err != nil {
 		return Translated{}, ErrUnknownQuery
 	}

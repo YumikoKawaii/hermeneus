@@ -2,17 +2,14 @@ package translate
 
 import (
 	"github.com/yumikokawaii/hermeneus/internal/reader"
-	"github.com/yumikokawaii/hermeneus/internal/writer"
 )
 
 // extract recognises which Coroot query a parsed SELECT is, returning the
 // ResultShape the encoder must use. Recognition is structural (over the AST),
-// not string-based. A statement that parses but matches no known shape is the
-// upgrade tripwire — ErrUnknownQuery.
-//
-// Two shapes (log attribute-name / attribute-value lists) use CH arrayJoin over
-// a map/array in the SELECT list; StarRocks expresses that as an UNNEST lateral
-// join. Those are rewritten on the AST here before the generic builder runs.
+// not string-based, and engine-neutral: it never rewrites the AST. A statement
+// that parses but matches no known shape is the upgrade tripwire —
+// ErrUnknownQuery. Dialect-specific lowering (e.g. arrayJoin -> UNNEST) is the
+// Writer's job, not recognition's.
 
 func fromTableName(f reader.FromItem) (string, bool) {
 	switch v := f.(type) {
@@ -80,8 +77,7 @@ func recognise(s *reader.Statement) (ResultShape, bool) {
 		}
 		// log attribute-value list: DISTINCT arrayJoin([LogAttributes[..], ResourceAttributes[..]])
 		if c, ok := colCall(s.Cols[0]); ok && c.Fn == "arrayJoin" && len(c.Args) == 1 {
-			if arr, ok := c.Args[0].(reader.ArrayExpression); ok {
-				unnestLogAttrValues(s, arr)
+			if _, ok := c.Args[0].(reader.ArrayExpression); ok {
 				return shape1("v", "String"), true
 			}
 		}
@@ -92,7 +88,6 @@ func recognise(s *reader.Statement) (ResultShape, bool) {
 		if c, ok := colCall(s.Cols[0]); ok && c.Fn == "arrayJoin" &&
 			s.Cols[0].Alias == "k" && len(c.Args) == 1 {
 			if inner, ok := c.Args[0].(reader.CallExpression); ok && inner.Fn == "arrayConcat" {
-				unnestLogAttrNames(s, c.Args[0])
 				return shape1("k", "String"), true
 			}
 		}
@@ -230,40 +225,6 @@ func spanShape() ResultShape {
 		{Name: "Events.Name", CHType: "Array(String)"},
 		{Name: "Events.Attributes", CHType: "Array(Map(String,String))"},
 	}}
-}
-
-// unnestLogAttrNames rewrites
-//
-//	SELECT arrayJoin(arrayConcat(mapKeys(A), mapKeys(B))) AS k FROM otel_logs ...
-//
-// into
-//
-//	SELECT k FROM otel_logs, unnest(<inner>) AS t(k) ...
-//
-// by moving the arrayConcat arg into an UNNEST lateral join column named k.
-func unnestLogAttrNames(s *reader.Statement, inner reader.Expression) {
-	s.Cols = []reader.Column{{Expression: reader.IdentExpression{Name: "k"}}}
-	s.From = reader.JoinRef{
-		Left:  s.From,
-		Right: writer.UnnestRef{Arg: inner, ColAlias: "k"},
-		Comma: true,
-	}
-}
-
-// unnestLogAttrValues rewrites
-//
-//	SELECT DISTINCT arrayJoin([A[x], B[y]]) FROM otel_logs ...
-//
-// into
-//
-//	SELECT DISTINCT k FROM otel_logs, unnest([A[x], B[y]]) AS t(k) ...
-func unnestLogAttrValues(s *reader.Statement, arr reader.ArrayExpression) {
-	s.Cols = []reader.Column{{Expression: reader.IdentExpression{Name: "k"}}}
-	s.From = reader.JoinRef{
-		Left:  s.From,
-		Right: writer.UnnestRef{Arg: arr, ColAlias: "k"},
-		Comma: true,
-	}
 }
 
 func hasPrefix(s, prefix string) bool {
