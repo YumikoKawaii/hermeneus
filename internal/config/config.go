@@ -22,8 +22,12 @@ type CHServer struct {
 }
 
 type StarRocks struct {
-	MySQLDSN string `yaml:"mysqlDSN"`
-	Database string `yaml:"database"`
+	MySQLDSN       string `yaml:"mysqlDSN"`
+	Database       string `yaml:"database"`
+	WriteMode      string `yaml:"writeMode"`
+	StreamLoadHost string `yaml:"streamLoadHost"`
+	StreamLoadUser string `yaml:"streamLoadUser"`
+	StreamLoadPass string `yaml:"streamLoadPass"`
 }
 
 type Kafka struct {
@@ -42,6 +46,9 @@ func Default() Config {
 			VersionPatch:    1,
 			ProtocolVersion: 54465,
 			Database:        "default",
+		},
+		StarRocks: StarRocks{
+			WriteMode: "stream_load",
 		},
 		Kafka: Kafka{
 			TopicPrefix: "hermeneus.",
@@ -66,6 +73,18 @@ func FromEnv() Config {
 	}
 	if v := os.Getenv("HERMENEUS_SR_MYSQL_DSN"); v != "" {
 		c.StarRocks.MySQLDSN = v
+	}
+	if v := os.Getenv("HERMENEUS_SR_WRITE_MODE"); v != "" {
+		c.StarRocks.WriteMode = v
+	}
+	if v := os.Getenv("HERMENEUS_SR_STREAM_LOAD_HOST"); v != "" {
+		c.StarRocks.StreamLoadHost = v
+	}
+	if v := os.Getenv("HERMENEUS_SR_STREAM_LOAD_USER"); v != "" {
+		c.StarRocks.StreamLoadUser = v
+	}
+	if v := os.Getenv("HERMENEUS_SR_STREAM_LOAD_PASS"); v != "" {
+		c.StarRocks.StreamLoadPass = v
 	}
 	if v := os.Getenv("HERMENEUS_KAFKA_BROKERS"); v != "" {
 		c.Kafka.Brokers = strings.Split(v, ",")

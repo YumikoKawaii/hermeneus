@@ -30,10 +30,6 @@ func (StarRocks) Read(s *extractor.Statement) (string, error) {
 	return b.sb.String(), nil
 }
 
-func (StarRocks) Write(target string, records []extractor.Record) error {
-	return fmt.Errorf("starrocks: write unwired for target %q (%d records)", target, len(records))
-}
-
 type builder struct {
 	sb  strings.Builder
 	err error
