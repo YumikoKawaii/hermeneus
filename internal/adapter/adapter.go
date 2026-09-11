@@ -7,5 +7,5 @@ type Reader interface {
 }
 
 type Writer interface {
-	Write(table string, records []extractor.Record) error
+	Write(target string, records []extractor.Record) error
 }
