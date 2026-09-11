@@ -1,4 +1,4 @@
-package system
+package chserver
 
 import (
 	"strings"
@@ -6,11 +6,11 @@ import (
 	"github.com/ClickHouse/ch-go/proto"
 )
 
-// Package system provides canned answers to the ClickHouse system.* probes that
+// This file provides canned answers to the ClickHouse system.* probes that
 // Coroot's ch client issues on connect and during operation, so upstream Coroot
 // boots against Hermeneus without a real ClickHouse behind it.
 
-type Probe struct {
+type systemProbe struct {
 	Match    func(sql string) bool
 	Response func(db string) []proto.InputColumn
 }
@@ -31,9 +31,9 @@ func contains(sql, sub string) bool {
 	return strings.Contains(strings.ToLower(sql), strings.ToLower(sub))
 }
 
-// Registry returns the ordered set of known probes.
-func Registry() []Probe {
-	return []Probe{
+// systemRegistry returns the ordered set of known probes.
+func systemRegistry() []systemProbe {
+	return []systemProbe{
 		{
 			// EXISTS system.zookeeper -> 0 (standalone; disables ON CLUSTER path).
 			Match: func(sql string) bool {
@@ -136,9 +136,9 @@ func Registry() []Probe {
 	}
 }
 
-// Match returns the response columns for the first probe matching sql, or nil.
-func Match(sql, db string) ([]proto.InputColumn, bool) {
-	for _, p := range Registry() {
+// systemMatch returns the response columns for the first probe matching sql, or nil.
+func systemMatch(sql, db string) ([]proto.InputColumn, bool) {
+	for _, p := range systemRegistry() {
 		if p.Match(sql) {
 			return p.Response(db), true
 		}
@@ -148,7 +148,7 @@ func Match(sql, db string) ([]proto.InputColumn, bool) {
 
 // IsDDL reports whether the statement should be swallowed (schema owned
 // out-of-band): CREATE / ALTER / DROP / RENAME / SET / USE / materialized views.
-func IsDDL(sql string) bool {
+func isDDL(sql string) bool {
 	s := strings.ToUpper(strings.TrimSpace(sql))
 	for _, p := range []string{"CREATE", "ALTER", "DROP", "RENAME", "SET ", "USE ", "TRUNCATE", "OPTIMIZE"} {
 		if strings.HasPrefix(s, p) {

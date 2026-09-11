@@ -12,7 +12,6 @@ import (
 	"github.com/ClickHouse/ch-go/proto"
 	"github.com/yumikokawaii/hermeneus/internal/config"
 	"github.com/yumikokawaii/hermeneus/internal/extractor"
-	"github.com/yumikokawaii/hermeneus/internal/system"
 	"github.com/yumikokawaii/hermeneus/internal/translate"
 )
 
@@ -137,7 +136,7 @@ func (s *Server) handleQuery(cc *connCtx) error {
 	cc.compressed = q.Compression == proto.CompressionEnabled
 
 	body := q.Body
-	if translate.Classify(body) == translate.KindInsert {
+	if translate.IsInsert(body) {
 		return s.handleInsert(cc, body)
 	}
 
@@ -146,10 +145,10 @@ func (s *Server) handleQuery(cc *connCtx) error {
 		return err
 	}
 
-	if cols, ok := system.Match(body, s.cfg.Server.Database); ok {
+	if cols, ok := systemMatch(body, s.cfg.Server.Database); ok {
 		return s.sendResult(cc, cols)
 	}
-	if system.IsDDL(body) {
+	if isDDL(body) {
 		return s.sendResult(cc, nil)
 	}
 

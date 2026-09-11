@@ -22,17 +22,6 @@ func New(r Reader) *Translator { return &Translator{r: r} }
 // the upgrade tripwire (see docs/DESIGN.md §3).
 var ErrUnknownQuery = errors.New("hermeneus: unrecognised query, no translation registered")
 
-// Kind classifies an incoming statement so the server can route it.
-type Kind int
-
-const (
-	KindUnknown     Kind = iota
-	KindSystemProbe      // system.* / handshake probe -> internal/system
-	KindDDL              // CREATE/ALTER/MV -> swallow or map
-	KindInsert           // INSERT -> Stream Load
-	KindSelect           // known Coroot SELECT -> Translate
-)
-
 // ResultShape declares the exact column order + ClickHouse types Coroot's
 // Result.Auto() expects back, so the server can encode the block correctly.
 type ResultShape struct {
@@ -51,26 +40,12 @@ type Translated struct {
 	Shape ResultShape
 }
 
-// Classify inspects a raw statement body and decides its Kind.
-// Coroot's clickhouse-go binds @named args client-side, so bodies arrive as
-// concrete SQL. This is a cheap prefix/keyword pass, no full parse.
-func Classify(sql string) Kind {
-	s := strings.ToUpper(strings.TrimSpace(sql))
-	switch {
-	case strings.HasPrefix(s, "INSERT"):
-		return KindInsert
-	case strings.HasPrefix(s, "CREATE"), strings.HasPrefix(s, "ALTER"),
-		strings.HasPrefix(s, "DROP"), strings.HasPrefix(s, "RENAME"),
-		strings.HasPrefix(s, "TRUNCATE"), strings.HasPrefix(s, "OPTIMIZE"),
-		strings.HasPrefix(s, "SET "), strings.HasPrefix(s, "USE "):
-		return KindDDL
-	case strings.Contains(s, "SYSTEM."), strings.Contains(s, "CURRENTDATABASE()"):
-		return KindSystemProbe
-	case strings.HasPrefix(s, "SELECT"), strings.HasPrefix(s, "WITH"):
-		return KindSelect
-	default:
-		return KindUnknown
-	}
+// IsInsert reports whether a raw statement body is an INSERT, which the server
+// routes to the Writer sink. Coroot's clickhouse-go binds @named args
+// client-side, so bodies arrive as concrete SQL; this is a cheap prefix pass.
+// DDL swallowing and system.* probes are classified in internal/system.
+func IsInsert(sql string) bool {
+	return strings.HasPrefix(strings.ToUpper(strings.TrimSpace(sql)), "INSERT")
 }
 
 // Translate rewrites a known Coroot ClickHouse SELECT into the target SQL of the

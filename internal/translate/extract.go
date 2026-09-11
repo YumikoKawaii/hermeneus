@@ -1,6 +1,8 @@
 package translate
 
 import (
+	"strings"
+
 	"github.com/yumikokawaii/hermeneus/internal/extractor"
 )
 
@@ -52,8 +54,8 @@ func recognise(s *extractor.Statement) (ResultShape, bool) {
 	if s.Distinct && len(s.Cols) == 1 {
 		if name, ok := colIdent(s.Cols[0]); ok && name == "ServiceName" {
 			switch {
-			case hasPrefix(table, "otel_logs_service_name_severity_text"),
-				hasPrefix(table, "otel_traces_service_name"):
+			case strings.HasPrefix(table, "otel_logs_service_name_severity_text"),
+				strings.HasPrefix(table, "otel_traces_service_name"):
 				return shape1("ServiceName", "String"), true
 			}
 		}
@@ -225,8 +227,4 @@ func spanShape() ResultShape {
 		{Name: "Events.Name", CHType: "Array(String)"},
 		{Name: "Events.Attributes", CHType: "Array(Map(String,String))"},
 	}}
-}
-
-func hasPrefix(s, prefix string) bool {
-	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
 }
