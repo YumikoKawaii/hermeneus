@@ -228,6 +228,19 @@ func (b *builder) expr(e extractor.Expression) {
 	case extractor.NotExpression:
 		b.w("NOT ")
 		b.expr(v.X)
+	case extractor.BetweenExpression:
+		b.expr(v.X)
+		if v.Not {
+			b.w(" NOT")
+		}
+		b.w(" BETWEEN ")
+		b.expr(v.Lo)
+		b.w(" AND ")
+		b.expr(v.Hi)
+	case extractor.SubqueryExpression:
+		b.w("(")
+		b.selectStmt(v.Sub)
+		b.w(")")
 	case extractor.CaseExpression:
 		b.caseExpr(v)
 	case extractor.InExpression:

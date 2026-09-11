@@ -42,6 +42,7 @@ var keywords = map[string]bool{
 	"OR":       true,
 	"NOT":      true,
 	"IN":       true,
+	"BETWEEN":  true,
 	"GLOBAL":   true,
 	"INTERVAL": true,
 	"ASC":      true,

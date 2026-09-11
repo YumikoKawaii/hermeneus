@@ -85,6 +85,14 @@ type BinaryExpression struct {
 
 type NotExpression struct{ X Expression }
 
+type BetweenExpression struct { // x [NOT] BETWEEN lo AND hi
+	Not      bool
+	X        Expression
+	Lo, Hi   Expression
+}
+
+type SubqueryExpression struct{ Sub *Statement } // scalar (SELECT ...) as an expression
+
 type InExpression struct {
 	Global bool
 	Not    bool
@@ -119,6 +127,8 @@ func (ArrayExpression) IsExpression()    {}
 func (TupleExpression) IsExpression()    {}
 func (BinaryExpression) IsExpression()   {}
 func (NotExpression) IsExpression()      {}
+func (BetweenExpression) IsExpression()  {}
+func (SubqueryExpression) IsExpression() {}
 func (InExpression) IsExpression()       {}
 func (IntervalExpression) IsExpression() {}
 func (CaseExpression) IsExpression()     {}

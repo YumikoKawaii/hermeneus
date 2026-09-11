@@ -416,7 +416,8 @@ func (p *parser) cmpExpr() (Expression, error) {
 		p.advance()
 	}
 	not := false
-	if p.isKw("NOT") && p.peek().kind == tKeyword && p.peek().text == "IN" {
+	if p.isKw("NOT") && p.peek().kind == tKeyword &&
+		(p.peek().text == "IN" || p.peek().text == "BETWEEN") {
 		not = true
 		p.advance()
 	}
@@ -426,6 +427,21 @@ func (p *parser) cmpExpr() (Expression, error) {
 	}
 	if global {
 		return nil, p.errf("GLOBAL not followed by IN")
+	}
+	if p.isKw("BETWEEN") {
+		p.advance()
+		lo, err := p.addExpr()
+		if err != nil {
+			return nil, err
+		}
+		if err := p.eatKw("AND"); err != nil {
+			return nil, err
+		}
+		hi, err := p.addExpr()
+		if err != nil {
+			return nil, err
+		}
+		return BetweenExpression{Not: not, X: left, Lo: lo, Hi: hi}, nil
 	}
 	switch {
 	case p.isPunct("="), p.isPunct("!="), p.isPunct("<>"),
@@ -586,8 +602,18 @@ func (p *parser) primary() (Expression, error) {
 	case p.isPunct("["):
 		return p.arrayLiteral()
 	case p.isPunct("("):
-		// parenthesised expr or tuple
+		// parenthesised expr, tuple, or scalar subquery
 		p.advance()
+		if p.isKw("SELECT") || p.isKw("WITH") {
+			q, err := p.Statement()
+			if err != nil {
+				return nil, err
+			}
+			if err := p.eatPunct(")"); err != nil {
+				return nil, err
+			}
+			return SubqueryExpression{Sub: q}, nil
+		}
 		first, err := p.expr()
 		if err != nil {
 			return nil, err
