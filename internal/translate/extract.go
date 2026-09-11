@@ -1,7 +1,7 @@
 package translate
 
 import (
-	"github.com/yumikokawaii/hermeneus/internal/reader"
+	"github.com/yumikokawaii/hermeneus/internal/extractor"
 )
 
 // extract recognises which Coroot query a parsed SELECT is, returning the
@@ -11,41 +11,41 @@ import (
 // ErrUnknownQuery. Dialect-specific lowering (e.g. arrayJoin -> UNNEST) is the
 // Writer's job, not recognition's.
 
-func fromTableName(f reader.FromItem) (string, bool) {
+func fromTableName(f extractor.FromItem) (string, bool) {
 	switch v := f.(type) {
-	case reader.TableRef:
+	case extractor.TableRef:
 		return v.Name, true
-	case reader.JoinRef:
+	case extractor.JoinRef:
 		return fromTableName(v.Left)
 	default:
 		return "", false
 	}
 }
 
-func colIdent(c reader.Column) (string, bool) {
-	id, ok := c.Expression.(reader.IdentExpression)
+func colIdent(c extractor.Column) (string, bool) {
+	id, ok := c.Expression.(extractor.IdentExpression)
 	if !ok {
 		return "", false
 	}
 	return id.Name, true
 }
 
-func colMember(c reader.Column) (string, string, bool) {
-	m, ok := c.Expression.(reader.MemberExpression)
+func colMember(c extractor.Column) (string, string, bool) {
+	m, ok := c.Expression.(extractor.MemberExpression)
 	if !ok {
 		return "", "", false
 	}
 	return m.Base, m.Field, true
 }
 
-func colCall(c reader.Column) (reader.CallExpression, bool) {
-	fn, ok := c.Expression.(reader.CallExpression)
+func colCall(c extractor.Column) (extractor.CallExpression, bool) {
+	fn, ok := c.Expression.(extractor.CallExpression)
 	return fn, ok
 }
 
 // recognise returns the ResultShape for a parsed SELECT, applying any AST
 // pre-transform the shape requires, or false if no shape matches.
-func recognise(s *reader.Statement) (ResultShape, bool) {
+func recognise(s *extractor.Statement) (ResultShape, bool) {
 	table, _ := fromTableName(s.From)
 
 	// GetServicesFromLogs / GetServicesFromTraces: SELECT DISTINCT ServiceName FROM <tbl>
@@ -77,7 +77,7 @@ func recognise(s *reader.Statement) (ResultShape, bool) {
 		}
 		// log attribute-value list: DISTINCT arrayJoin([LogAttributes[..], ResourceAttributes[..]])
 		if c, ok := colCall(s.Cols[0]); ok && c.Fn == "arrayJoin" && len(c.Args) == 1 {
-			if _, ok := c.Args[0].(reader.ArrayExpression); ok {
+			if _, ok := c.Args[0].(extractor.ArrayExpression); ok {
 				return shape1("v", "String"), true
 			}
 		}
@@ -87,7 +87,7 @@ func recognise(s *reader.Statement) (ResultShape, bool) {
 	if !s.Distinct && len(s.Cols) == 1 && table == "otel_logs" {
 		if c, ok := colCall(s.Cols[0]); ok && c.Fn == "arrayJoin" &&
 			s.Cols[0].Alias == "k" && len(c.Args) == 1 {
-			if inner, ok := c.Args[0].(reader.CallExpression); ok && inner.Fn == "arrayConcat" {
+			if inner, ok := c.Args[0].(extractor.CallExpression); ok && inner.Fn == "arrayConcat" {
 				return shape1("k", "String"), true
 			}
 		}

@@ -29,4 +29,3 @@ func New(cfg config.StarRocks) (*Client, error) {
 func (c *Client) Query(ctx context.Context, sqlText string) (*sql.Rows, error) {
 	return c.db.QueryContext(ctx, sqlText)
 }
-

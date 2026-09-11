@@ -1,4 +1,4 @@
-package reader
+package extractor
 
 import (
 	"fmt"
@@ -10,7 +10,7 @@ type parser struct {
 	pos  int
 }
 
-func Parse(sql string) (*Statement, error) {
+func ExtractLogicalIR(sql string) (*Statement, error) {
 	toks, err := newLexer(sql).tokenize()
 	if err != nil {
 		return nil, err

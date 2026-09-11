@@ -1,5 +1,5 @@
 // Package starrocks is the StarRocks writer: it renders the engine-neutral
-// reader IR to StarRocks SQL. It is one adapter behind translate.Writer; other
+// extractor IR to StarRocks SQL. It is one adapter behind translate.Writer; other
 // backends live beside it under internal/adapter.
 package starrocks
 
@@ -7,15 +7,15 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/yumikokawaii/hermeneus/internal/reader"
+	"github.com/yumikokawaii/hermeneus/internal/extractor"
 )
 
 // UnnestRef is a StarRocks lateral UNNEST column. It is not produced by the
-// reader; lowerArrayJoin synthesises it (turning a CH arrayJoin(<arr>) into
-// UNNEST) and the writer renders it. It satisfies reader.FromItem so it can sit
+// extractor; lowerArrayJoin synthesises it (turning a CH arrayJoin(<arr>) into
+// UNNEST) and the writer renders it. It satisfies extractor.FromItem so it can sit
 // in the AST.
 type UnnestRef struct {
-	Arg      reader.Expression
+	Arg      extractor.Expression
 	ColAlias string
 }
 
@@ -27,7 +27,7 @@ type StarRocks struct{}
 // Build renders a parsed CH SELECT as StarRocks SQL, applying every CH→SR
 // construct mapping structurally over the AST. Any function or construct it
 // cannot map returns an error — fail-loud tripwire (the real IR seam).
-func (StarRocks) Build(s *reader.Statement) (string, error) {
+func (StarRocks) Build(s *extractor.Statement) (string, error) {
 	lowerArrayJoin(s)
 	b := &builder{}
 	b.selectStmt(s)
@@ -50,16 +50,16 @@ type builder struct {
 //	  -> SELECT [DISTINCT] k FROM t, unnest(<X>) AS t(k) ...
 //
 // StarRocks has no arrayJoin; UNNEST is its lateral-explode form.
-func lowerArrayJoin(s *reader.Statement) {
+func lowerArrayJoin(s *extractor.Statement) {
 	if len(s.Cols) != 1 {
 		return
 	}
-	call, ok := s.Cols[0].Expression.(reader.CallExpression)
+	call, ok := s.Cols[0].Expression.(extractor.CallExpression)
 	if !ok || call.Fn != "arrayJoin" || len(call.Args) != 1 {
 		return
 	}
-	s.Cols = []reader.Column{{Expression: reader.IdentExpression{Name: "k"}}}
-	s.From = reader.JoinRef{
+	s.Cols = []extractor.Column{{Expression: extractor.IdentExpression{Name: "k"}}}
+	s.From = extractor.JoinRef{
 		Left:  s.From,
 		Right: UnnestRef{Arg: call.Args[0], ColAlias: "k"},
 		Comma: true,
@@ -74,7 +74,7 @@ func (b *builder) fail(format string, a ...any) {
 
 func (b *builder) w(s string) { b.sb.WriteString(s) }
 
-func (b *builder) selectStmt(s *reader.Statement) {
+func (b *builder) selectStmt(s *extractor.Statement) {
 	if len(s.With) > 0 {
 		b.w("WITH ")
 		for i, c := range s.With {
@@ -144,15 +144,15 @@ func (b *builder) selectStmt(s *reader.Statement) {
 
 var derivedAliasSeq int
 
-func (b *builder) fromItem(f reader.FromItem) {
+func (b *builder) fromItem(f extractor.FromItem) {
 	switch v := f.(type) {
-	case reader.TableRef:
+	case extractor.TableRef:
 		b.w(v.Name)
 		if v.Alias != "" {
 			b.w(" ")
 			b.w(v.Alias)
 		}
-	case reader.SubqueryRef:
+	case extractor.SubqueryRef:
 		b.w("(")
 		b.selectStmt(v.Query)
 		b.w(")")
@@ -164,7 +164,7 @@ func (b *builder) fromItem(f reader.FromItem) {
 		}
 		b.w(" ")
 		b.w(alias)
-	case reader.JoinRef:
+	case extractor.JoinRef:
 		b.fromItem(v.Left)
 		if v.Comma {
 			b.w(", ")
@@ -188,26 +188,26 @@ func (b *builder) fromItem(f reader.FromItem) {
 	}
 }
 
-func (b *builder) expr(e reader.Expression) {
+func (b *builder) expr(e extractor.Expression) {
 	switch v := e.(type) {
-	case reader.IdentExpression:
+	case extractor.IdentExpression:
 		b.w(v.Name)
-	case reader.MemberExpression:
+	case extractor.MemberExpression:
 		// CH Nested parallel-array column Events.X -> SR backtick Array column.
 		if v.Base == "Events" && (v.Field == "Timestamp" || v.Field == "Name" || v.Field == "Attributes") {
 			b.w("`Events." + v.Field + "`")
 			return
 		}
 		b.w(v.Base + "." + v.Field)
-	case reader.NumberExpression:
+	case extractor.NumberExpression:
 		b.w(v.Text)
-	case reader.StringExpression:
+	case extractor.StringExpression:
 		b.w(v.Text)
-	case reader.NullExpression:
+	case extractor.NullExpression:
 		b.w("NULL")
-	case reader.StarExpression:
+	case extractor.StarExpression:
 		b.w("*")
-	case reader.ArrayExpression:
+	case extractor.ArrayExpression:
 		b.w("[")
 		for i, el := range v.Elems {
 			if i > 0 {
@@ -216,7 +216,7 @@ func (b *builder) expr(e reader.Expression) {
 			b.expr(el)
 		}
 		b.w("]")
-	case reader.TupleExpression:
+	case extractor.TupleExpression:
 		b.w("(")
 		for i, el := range v.Elems {
 			if i > 0 {
@@ -225,35 +225,35 @@ func (b *builder) expr(e reader.Expression) {
 			b.expr(el)
 		}
 		b.w(")")
-	case reader.IndexExpression:
+	case extractor.IndexExpression:
 		b.expr(v.Base)
 		b.w("[")
 		b.expr(v.Index)
 		b.w("]")
-	case reader.BinaryExpression:
+	case extractor.BinaryExpression:
 		b.binary(v)
-	case reader.NotExpression:
+	case extractor.NotExpression:
 		b.w("NOT ")
 		b.expr(v.X)
-	case reader.CaseExpression:
+	case extractor.CaseExpression:
 		b.caseExpr(v)
-	case reader.InExpression:
+	case extractor.InExpression:
 		b.inExpr(v)
-	case reader.CallExpression:
+	case extractor.CallExpression:
 		b.call(v)
-	case reader.IntervalExpression:
+	case extractor.IntervalExpression:
 		b.fail("bare INTERVAL not expected outside toStartOfInterval")
 	default:
 		b.fail("unknown expr %T", e)
 	}
 }
 
-func (b *builder) binary(v reader.BinaryExpression) {
+func (b *builder) binary(v extractor.BinaryExpression) {
 	// max(End)+1 -> date_add(max(End), INTERVAL 1 SECOND)
 	if v.Op == "+" {
-		if c, ok := v.Left.(reader.CallExpression); ok && c.Fn == "max" &&
+		if c, ok := v.Left.(extractor.CallExpression); ok && c.Fn == "max" &&
 			isNumber(v.Right, "1") && len(c.Args) == 1 {
-			if id, ok := c.Args[0].(reader.IdentExpression); ok && id.Name == "End" {
+			if id, ok := c.Args[0].(extractor.IdentExpression); ok && id.Name == "End" {
 				b.w("date_add(max(End), INTERVAL 1 SECOND)")
 				return
 			}
@@ -272,7 +272,7 @@ func (b *builder) binary(v reader.BinaryExpression) {
 	b.expr(v.Right)
 }
 
-func (b *builder) caseExpr(v reader.CaseExpression) {
+func (b *builder) caseExpr(v extractor.CaseExpression) {
 	b.w("CASE")
 	for _, w := range v.Whens {
 		b.w(" WHEN ")
@@ -287,7 +287,7 @@ func (b *builder) caseExpr(v reader.CaseExpression) {
 	b.w(" END")
 }
 
-func (b *builder) inExpr(v reader.InExpression) {
+func (b *builder) inExpr(v extractor.InExpression) {
 	// tuple-IN is rewritten to an OR chain, so it replaces the whole "lhs IN …".
 	if v.Tuples != nil {
 		b.tupleIn(v.Lhs, v.Tuples, v.Not)
@@ -321,8 +321,8 @@ func (b *builder) inExpr(v reader.InExpression) {
 
 // tupleIn rewrites (a,b) IN ((x,y),(z,w)) into an OR of equality pairs, since
 // StarRocks does not support row-tuple IN. NOT (a,b) IN (...) negates the group.
-func (b *builder) tupleIn(lhs reader.Expression, tuples [][]reader.Expression, not bool) {
-	tup, ok := lhs.(reader.TupleExpression)
+func (b *builder) tupleIn(lhs extractor.Expression, tuples [][]extractor.Expression, not bool) {
+	tup, ok := lhs.(extractor.TupleExpression)
 	if !ok || len(tup.Elems) != 2 {
 		b.fail("tuple IN lhs must be a 2-tuple")
 		return
@@ -357,7 +357,7 @@ func (b *builder) tupleIn(lhs reader.Expression, tuples [][]reader.Expression, n
 	b.w(")")
 }
 
-func (b *builder) call(c reader.CallExpression) {
+func (b *builder) call(c extractor.CallExpression) {
 	fn := c.Fn
 	if fn == "intDiv" && len(c.Args) == 2 {
 		b.w("floor((")
@@ -441,14 +441,14 @@ var simpleFnMap = map[string]string{
 	"any":        "any_value",
 }
 
-func (b *builder) plainFn(name string, args []reader.Expression) {
+func (b *builder) plainFn(name string, args []extractor.Expression) {
 	b.w(name)
 	b.w("(")
 	b.args(args)
 	b.w(")")
 }
 
-func (b *builder) args(args []reader.Expression) {
+func (b *builder) args(args []extractor.Expression) {
 	for i, a := range args {
 		if i > 0 {
 			b.w(", ")
@@ -457,7 +457,7 @@ func (b *builder) args(args []reader.Expression) {
 	}
 }
 
-func (b *builder) needArgs(c reader.CallExpression, n int, fn func()) {
+func (b *builder) needArgs(c extractor.CallExpression, n int, fn func()) {
 	if len(c.Args) != n {
 		b.fail("%s expects %d args, got %d", c.Fn, n, len(c.Args))
 		return
@@ -465,7 +465,7 @@ func (b *builder) needArgs(c reader.CallExpression, n int, fn func()) {
 	fn()
 }
 
-func (b *builder) multiIf(args []reader.Expression) {
+func (b *builder) multiIf(args []extractor.Expression) {
 	if len(args) < 3 || len(args)%2 == 0 {
 		b.fail("multiIf needs an odd arg count >= 3")
 		return
@@ -483,7 +483,7 @@ func (b *builder) multiIf(args []reader.Expression) {
 	b.w(" END")
 }
 
-func (b *builder) regexpFn(fn string, args []reader.Expression) {
+func (b *builder) regexpFn(fn string, args []extractor.Expression) {
 	if len(args) != 2 {
 		b.fail("%s expects 2 args", fn)
 		return
@@ -497,7 +497,7 @@ func (b *builder) regexpFn(fn string, args []reader.Expression) {
 		return
 	}
 	// hasToken(col, 'tok') -> regexp(col, '\btok\b')
-	s, ok := args[1].(reader.StringExpression)
+	s, ok := args[1].(extractor.StringExpression)
 	if !ok || len(s.Text) < 2 {
 		b.fail("hasToken token must be a string literal")
 		return
@@ -508,12 +508,12 @@ func (b *builder) regexpFn(fn string, args []reader.Expression) {
 	b.w(fmt.Sprintf(`, '\\b%s\\b')`, tok))
 }
 
-func (b *builder) toStartOfInterval(args []reader.Expression) {
+func (b *builder) toStartOfInterval(args []extractor.Expression) {
 	if len(args) != 2 {
 		b.fail("toStartOfInterval expects 2 args")
 		return
 	}
-	iv, ok := args[1].(reader.IntervalExpression)
+	iv, ok := args[1].(extractor.IntervalExpression)
 	if !ok || !strings.EqualFold(iv.Unit, "second") {
 		b.fail("toStartOfInterval second arg must be INTERVAL n second")
 		return
@@ -523,12 +523,12 @@ func (b *builder) toStartOfInterval(args []reader.Expression) {
 	b.w(fmt.Sprintf(")/%s)*%s)", iv.N, iv.N))
 }
 
-func (b *builder) toDateTime64(args []reader.Expression) {
+func (b *builder) toDateTime64(args []extractor.Expression) {
 	if len(args) < 1 {
 		b.fail("toDateTime64 expects a literal")
 		return
 	}
-	s, ok := args[0].(reader.StringExpression)
+	s, ok := args[0].(extractor.StringExpression)
 	if !ok {
 		b.fail("toDateTime64 first arg must be a string literal")
 		return
@@ -545,12 +545,12 @@ func (b *builder) toDateTime64(args []reader.Expression) {
 }
 
 // roundDown(x, [b0..bn]) -> CASE ladder snapping x down to the largest bound<=x.
-func (b *builder) roundDown(args []reader.Expression) {
+func (b *builder) roundDown(args []extractor.Expression) {
 	if len(args) != 2 {
 		b.fail("roundDown expects 2 args")
 		return
 	}
-	arr, ok := args[1].(reader.ArrayExpression)
+	arr, ok := args[1].(extractor.ArrayExpression)
 	if !ok || len(arr.Elems) == 0 {
 		b.fail("roundDown second arg must be a non-empty array literal")
 		return
@@ -571,14 +571,14 @@ func (b *builder) roundDown(args []reader.Expression) {
 	b.w(fmt.Sprintf(" ELSE %s END", bounds[0]))
 }
 
-func isNumber(e reader.Expression, want string) bool {
-	n, ok := e.(reader.NumberExpression)
+func isNumber(e extractor.Expression, want string) bool {
+	n, ok := e.(extractor.NumberExpression)
 	return ok && n.Text == want
 }
 
 // exprText renders a simple expr back to text for literal-bound contexts
 // (roundDown bounds, Duration/1000000). Returns "" for anything non-trivial.
-func exprText(e reader.Expression) string {
+func exprText(e extractor.Expression) string {
 	sub := &builder{}
 	sub.expr(e)
 	if sub.err != nil {

@@ -3,40 +3,20 @@ package chserver
 import (
 	"fmt"
 	"log"
-	"regexp"
-	"strings"
 
 	"github.com/ClickHouse/ch-go/proto"
+	"github.com/yumikokawaii/hermeneus/internal/extractor"
 )
-
-var insertRe = regexp.MustCompile("(?is)^\\s*INSERT\\s+INTO\\s+[`\"]?([A-Za-z_][A-Za-z0-9_.]*)[`\"]?\\s*\\(([^)]*)\\)")
-
-func parseInsert(body string) (table string, cols []string, ok bool) {
-	m := insertRe.FindStringSubmatch(body)
-	if m == nil {
-		return "", nil, false
-	}
-	table = m[1]
-	if i := strings.LastIndex(table, "."); i >= 0 {
-		table = table[i+1:]
-	}
-	for _, c := range strings.Split(m[2], ",") {
-		c = strings.Trim(strings.TrimSpace(c), "`\"")
-		if c != "" {
-			cols = append(cols, c)
-		}
-	}
-	return table, cols, len(cols) > 0
-}
 
 func (s *Server) handleInsert(cc *connCtx, body string) error {
 	if err := s.drainClientData(cc); err != nil {
 		return err
 	}
-	table, names, ok := parseInsert(body)
+	table, records, ok := extractor.ExtractValues(body)
 	if !ok {
 		return s.sendException(cc.conn, cc.buf, cc.ver, "hermeneus: cannot parse INSERT")
 	}
+	names := records[0].Columns
 	schema, ok := insertSchemas[table]
 	if !ok {
 		log.Printf("insert into unknown table %q", table)

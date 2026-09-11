@@ -4,15 +4,15 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/yumikokawaii/hermeneus/internal/reader"
+	"github.com/yumikokawaii/hermeneus/internal/extractor"
 )
 
-// Writer renders the engine-neutral reader IR to a target SQL dialect. Each
+// Writer renders the engine-neutral extractor IR to a target SQL dialect. Each
 // backend (StarRocks, …) provides an implementation; the concrete one is chosen
 // by config and injected into the Translator. A Writer must fail loud: any
 // construct it cannot map returns an error rather than a wrong query.
 type Writer interface {
-	Build(*reader.Statement) (string, error)
+	Build(*extractor.Statement) (string, error)
 }
 
 // Translator turns Coroot ClickHouse SELECTs into target SQL using an injected
@@ -83,7 +83,7 @@ func Classify(sql string) Kind {
 // injected Writer. Returns ErrUnknownQuery if the statement matches no known
 // Coroot query, or the Writer cannot map it — the upgrade tripwire.
 func (t *Translator) Translate(sql string) (Translated, error) {
-	stmt, err := reader.Parse(sql)
+	stmt, err := extractor.ExtractLogicalIR(sql)
 	if err != nil {
 		return Translated{}, ErrUnknownQuery
 	}

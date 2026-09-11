@@ -1,4 +1,4 @@
-package reader
+package extractor
 
 type Statement struct {
 	With     []CTE
