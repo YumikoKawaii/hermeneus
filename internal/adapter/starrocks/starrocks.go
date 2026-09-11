@@ -1,6 +1,3 @@
-// Package starrocks is the StarRocks writer: it renders the engine-neutral
-// extractor IR to StarRocks SQL. It is one adapter behind translate.Writer; other
-// backends live beside it under internal/adapter.
 package starrocks
 
 import (
@@ -21,13 +18,9 @@ type UnnestRef struct {
 
 func (UnnestRef) IsFrom() {}
 
-// StarRocks is the StarRocks implementation of translate.Writer.
 type StarRocks struct{}
 
-// Build renders a parsed CH SELECT as StarRocks SQL, applying every CH→SR
-// construct mapping structurally over the AST. Any function or construct it
-// cannot map returns an error — fail-loud tripwire (the real IR seam).
-func (StarRocks) Build(s *extractor.Statement) (string, error) {
+func (StarRocks) Read(s *extractor.Statement) (string, error) {
 	lowerArrayJoin(s)
 	b := &builder{}
 	b.selectStmt(s)
@@ -35,6 +28,10 @@ func (StarRocks) Build(s *extractor.Statement) (string, error) {
 		return "", b.err
 	}
 	return b.sb.String(), nil
+}
+
+func (StarRocks) Write(table string, records []extractor.Record) error {
+	return fmt.Errorf("starrocks: write unwired for table %q (%d records)", table, len(records))
 }
 
 type builder struct {

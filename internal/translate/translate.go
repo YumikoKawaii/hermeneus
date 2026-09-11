@@ -7,21 +7,15 @@ import (
 	"github.com/yumikokawaii/hermeneus/internal/extractor"
 )
 
-// Writer renders the engine-neutral extractor IR to a target SQL dialect. Each
-// backend (StarRocks, …) provides an implementation; the concrete one is chosen
-// by config and injected into the Translator. A Writer must fail loud: any
-// construct it cannot map returns an error rather than a wrong query.
-type Writer interface {
-	Build(*extractor.Statement) (string, error)
+type Reader interface {
+	Read(*extractor.Statement) (string, error)
 }
 
-// Translator turns Coroot ClickHouse SELECTs into target SQL using an injected
-// Writer. Construct it with New.
 type Translator struct {
-	w Writer
+	r Reader
 }
 
-func New(w Writer) *Translator { return &Translator{w: w} }
+func New(r Reader) *Translator { return &Translator{r: r} }
 
 // ErrUnknownQuery is returned when a SELECT does not match any registered Coroot
 // query. The server turns this into a ClickHouse exception AND logs the raw SQL —
@@ -91,7 +85,7 @@ func (t *Translator) Translate(sql string) (Translated, error) {
 	if !ok {
 		return Translated{}, ErrUnknownQuery
 	}
-	out, err := t.w.Build(stmt)
+	out, err := t.r.Read(stmt)
 	if err != nil {
 		return Translated{}, ErrUnknownQuery
 	}
