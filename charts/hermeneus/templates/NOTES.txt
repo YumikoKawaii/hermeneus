@@ -1,0 +1,15 @@
+hermeneus is deployed.
+
+Coroot connects to it as ClickHouse at:
+
+  {{ include "hermeneus.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}
+
+Point Coroot's ClickHouse bootstrap at that address and database "{{ .Values.config.database }}":
+
+  --bootstrap-clickhouse-address={{ include "hermeneus.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}
+  --bootstrap-clickhouse-database={{ .Values.config.database }}
+
+{{- if not .Values.config.starrocks.host }}
+
+WARNING: config.starrocks.host is empty. Set it to your StarRocks FE host.
+{{- end }}

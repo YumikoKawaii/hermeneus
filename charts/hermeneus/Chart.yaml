@@ -1,0 +1,12 @@
+apiVersion: v2
+name: hermeneus
+description: A ClickHouse-native wire server that speaks StarRocks, for Coroot
+type: application
+version: 0.1.0
+appVersion: "latest"
+home: https://github.com/YumikoKawaii/hermeneus
+sources:
+  - https://github.com/YumikoKawaii/hermeneus
+maintainers:
+  - name: Yumiko Sturluson
+    url: https://github.com/YumikoKawaii

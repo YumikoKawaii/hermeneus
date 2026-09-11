@@ -1,0 +1,97 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "hermeneus.fullname" . }}
+  labels:
+    {{- include "hermeneus.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "hermeneus.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "hermeneus.selectorLabels" . | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "hermeneus.serviceAccountName" . }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: hermeneus
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: ch-native
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          env:
+            - name: HERMENEUS_LISTEN_ADDR
+              value: {{ .Values.config.listenAddr | quote }}
+            - name: HERMENEUS_DATABASE
+              value: {{ .Values.config.database | quote }}
+            - name: HERMENEUS_SINK
+              value: {{ .Values.config.sink | quote }}
+            - name: HERMENEUS_SR_HOST
+              value: {{ .Values.config.starrocks.host | quote }}
+            - name: HERMENEUS_SR_QUERY_PORT
+              value: {{ .Values.config.starrocks.queryPort | quote }}
+            - name: HERMENEUS_SR_HTTP_PORT
+              value: {{ .Values.config.starrocks.httpPort | quote }}
+            - name: HERMENEUS_SR_USER
+              value: {{ .Values.config.starrocks.user | quote }}
+            {{- if or .Values.config.starrocks.password .Values.config.starrocks.existingSecret }}
+            - name: HERMENEUS_SR_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.config.starrocks.existingSecret | default (include "hermeneus.fullname" .) }}
+                  key: {{ .Values.config.starrocks.existingSecretKey }}
+            {{- end }}
+            - name: HERMENEUS_SR_WRITE_MODE
+              value: {{ .Values.config.starrocks.writeMode | quote }}
+            {{- if .Values.config.kafka.brokers }}
+            - name: HERMENEUS_KAFKA_BROKERS
+              value: {{ .Values.config.kafka.brokers | quote }}
+            {{- end }}
+          # The listener speaks only the ClickHouse native TCP protocol; there is
+          # no HTTP endpoint, so probes are TCP socket checks on the wire port.
+          livenessProbe:
+            tcpSocket:
+              port: ch-native
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            tcpSocket:
+              port: ch-native
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

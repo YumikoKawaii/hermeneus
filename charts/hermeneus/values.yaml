@@ -1,0 +1,51 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/yumikokawaii/hermeneus
+  pullPolicy: IfNotPresent
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# hermeneus configuration, mapped to HERMENEUS_* env vars.
+config:
+  listenAddr: ":9000"
+  database: "hermeneus"
+  # Insert sink: "starrocks" or "kafka".
+  sink: "starrocks"
+  starrocks:
+    host: ""
+    queryPort: 9030
+    httpPort: 8030
+    user: "root"
+    # Set either password or existingSecret (existingSecret wins).
+    password: ""
+    # Existing secret holding the StarRocks password.
+    existingSecret: ""
+    existingSecretKey: "password"
+    # StarRocks write mode: "stream_load" or "insert".
+    writeMode: "stream_load"
+  kafka:
+    # Comma-separated broker list; only used when sink is "kafka".
+    brokers: ""
+
+service:
+  type: ClusterIP
+  port: 9000
+
+resources: {}
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+podAnnotations: {}
+podSecurityContext: {}
+securityContext: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
